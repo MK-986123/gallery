@@ -45,6 +45,10 @@ data class BackendSpec(
   val isLiteRtLm: Boolean
     get() = runtimeType == RuntimeType.LITERT_LM
 
+  /** Indicates whether the runtime type is llama.cpp. */
+  val isLlamaCpp: Boolean
+    get() = runtimeType == RuntimeType.LLAMA_CPP
+
   /**
    * The default accelerator for this model.
    *
