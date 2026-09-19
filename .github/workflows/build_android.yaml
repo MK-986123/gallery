@@ -25,8 +25,12 @@
           with:
             distribution: 'temurin'
             java-version: '21'
-        - name: Install Android SDK Platform 37
-          run: echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-37.0"
+        - name: Install Android SDK, NDK, and CMake
+          run: |
+            echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+              "platforms;android-37.0" \
+              "ndk;29.0.13113456" \
+              "cmake;3.31.6"
         - name: Build
           run: ./gradlew assembleRelease
   
