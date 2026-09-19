@@ -31,14 +31,14 @@ import java.net.URI
 val HfModelItemProto.modelName: String
   get() = id.substringAfterLast("/")
 
-/** Checks if repo contains LiteRT model files (.litertlm or .task). */
+/** Checks if the repo contains a model file supported by a Gallery runtime. */
 fun HfModelItemProto.hasCompatibleModelFiles(): Boolean {
-  return siblingsList.any { isLiteRtLmFileName(it.rfilename) }
+  return siblingsList.any { isSupportedModelFileName(it.rfilename) }
 }
 
-/** Gets all LiteRT model files in this model card. */
+/** Gets all model files supported by a Gallery runtime in this model card. */
 fun HfModelItemProto.getCompatibleModelFiles(): List<String> {
-  return siblingsList.map { it.rfilename }.filter { isLiteRtLmFileName(it) }
+  return siblingsList.map { it.rfilename }.filter { isSupportedModelFileName(it) }
 }
 
 /** Checks if the model card has at least one file compatible with current device hardware. */
@@ -111,6 +111,13 @@ fun isLiteRtLmFileName(filename: String): Boolean {
   return lower.endsWith(".litertlm") && !lower.contains("-web")
 }
 
+/** Checks if a filename is a GGUF model handled by the llama.cpp runtime. */
+fun isGgufFileName(filename: String): Boolean = filename.endsWith(".gguf", ignoreCase = true)
+
+/** Checks if a filename can be routed to one of Gallery's local LLM runtimes. */
+fun isSupportedModelFileName(filename: String): Boolean =
+  isLiteRtLmFileName(filename) || isGgufFileName(filename)
+
 /** Known mobile hardware vendors on Android devices. */
 @Suppress("ImmutableEnum")
 enum class DeviceVendor(val aliases: Set<String>) {
@@ -129,6 +136,9 @@ private val nonAndroidPlatformTokens =
 data class DeviceHardwareInfo(val vendor: DeviceVendor, val rawSocName: String = SOC.lowercase()) {
   /** Checks if a model filename is compatible with this device's hardware capabilities. */
   fun isCompatibleWithFile(filename: String): Boolean {
+    if (isGgufFileName(filename)) {
+      return true
+    }
     if (!isLiteRtLmFileName(filename)) {
       return false
     }
@@ -183,7 +193,7 @@ data class HfUrlInfo(
   val isDirectModelFile: Boolean = false,
 ) {
   companion object {
-    private val MODEL_FILE_EXTENSIONS = setOf(".litertlm", ".task")
+    private val MODEL_FILE_EXTENSIONS = setOf(".litertlm", ".task", ".gguf")
     private val HF_ACTION_KEYWORDS = setOf("resolve", "blob", "tree", "raw")
 
     private fun String.isModelFileName(): Boolean = MODEL_FILE_EXTENSIONS.any {
