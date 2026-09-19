@@ -1565,25 +1565,27 @@ constructor(
   }
 
   private fun createModelFromImportedModelInfo(info: ImportedModel): Model {
-    val accelerators: MutableList<Accelerator> =
+    val isGguf = info.fileName.endsWith(".gguf", ignoreCase = true)
+    val importedAccelerators: MutableList<Accelerator> =
       info.llmConfig.compatibleAcceleratorsList
         .mapNotNull { acceleratorLabel ->
           when (acceleratorLabel.trim()) {
             Accelerator.GPU.label -> Accelerator.GPU
             Accelerator.CPU.label -> Accelerator.CPU
             Accelerator.NPU.label -> Accelerator.NPU
-
-            else -> null // Ignore unknown accelerator labels
+            else -> null
           }
         }
         .toMutableList()
+    val accelerators: List<Accelerator> =
+      if (isGguf) listOf(Accelerator.CPU) else importedAccelerators
     val llmMaxToken = info.llmConfig.defaultMaxTokens.takeIf { it > 0 } ?: DEFAULT_MAX_TOKEN
-    val llmSupportImage = info.llmConfig.supportImage
-    val llmSupportAudio = info.llmConfig.supportAudio
-    val llmSupportTinyGarden = info.llmConfig.supportTinyGarden
-    val llmSupportMobileActions = info.llmConfig.supportMobileActions
-    val llmSupportThinking = info.llmConfig.supportThinking
-    val llmSupportSpeculativeDecoding = info.llmConfig.supportSpeculativeDecoding
+    val llmSupportImage = !isGguf && info.llmConfig.supportImage
+    val llmSupportAudio = !isGguf && info.llmConfig.supportAudio
+    val llmSupportTinyGarden = !isGguf && info.llmConfig.supportTinyGarden
+    val llmSupportMobileActions = !isGguf && info.llmConfig.supportMobileActions
+    val llmSupportThinking = !isGguf && info.llmConfig.supportThinking
+    val llmSupportSpeculativeDecoding = !isGguf && info.llmConfig.supportSpeculativeDecoding
     val configs: MutableList<Config> =
       createLlmChatConfigs(
           defaultMaxToken = llmMaxToken,
@@ -1623,7 +1625,6 @@ constructor(
         downloadFileName = info.fileName,
         imported = true,
       )
-    // We assume all imported models are LLM for now.
     val llmProfile =
       LlmProfile(
         supportTinyGarden = llmSupportTinyGarden,
@@ -1641,10 +1642,13 @@ constructor(
         supportAudio = llmSupportAudio,
         capabilities = capabilities.toList(),
         capabilityToTaskTypes = capabilityToTaskTypes.toMap(),
-        backendSpec = BackendSpec(runtimeType = RuntimeType.LITERT_LM, accelerators = accelerators),
+        backendSpec =
+          BackendSpec(
+            runtimeType = if (isGguf) RuntimeType.LLAMA_CPP else RuntimeType.LITERT_LM,
+            accelerators = accelerators,
+          ),
       )
     model.preProcess()
-
     return model
   }
 
