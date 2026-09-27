@@ -1495,7 +1495,7 @@ constructor(
 
       // Add to task.
       for (taskId in model.getTargetTaskIdsForImportedModel()) {
-        tasks.get(key = taskId)?.models?.add(model)
+        tasks[taskId]?.models?.add(model)
       }
 
       // Update status.
