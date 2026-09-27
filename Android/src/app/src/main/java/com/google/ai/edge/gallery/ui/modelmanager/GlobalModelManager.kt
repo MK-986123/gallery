@@ -90,6 +90,7 @@ import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.data.supportModelBenchmark
 import com.google.ai.edge.gallery.huggingface.extractHfUrlInfo
 import com.google.ai.edge.gallery.huggingface.normalizeDirectModelFileUrl
+import com.google.ai.edge.gallery.huggingface.supportsGgufOnDevice
 import com.google.ai.edge.gallery.proto.HfModelItemProto
 import com.google.ai.edge.gallery.proto.ImportedModel
 import com.google.ai.edge.gallery.ui.common.TaskIcon
@@ -627,7 +628,7 @@ private fun validateAndProcessModelUri(
 
   if (!hasValidExtension) {
     onUnsupportedModelError(getErrorMessage(context, R.string.unsupported_file_type_error))
-  } else if (isGguf && !android.os.Build.SUPPORTED_ABIS.contains("arm64-v8a")) {
+  } else if (isGguf && !supportsGgufOnDevice()) {
     onUnsupportedModelError(getErrorMessage(context, R.string.gguf_arm64_required))
   } else if (fileName != null && fileName.lowercase().contains("-web")) {
     onUnsupportedModelError(getErrorMessage(context, R.string.unsupported_web_model_error))

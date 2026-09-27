@@ -7,7 +7,6 @@ package com.google.ai.edge.gallery.runtime.llamacpp
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.os.Build
 import android.util.Log
 import com.arm.aichat.AiChat
 import com.arm.aichat.ChatRole
@@ -25,6 +24,7 @@ import com.google.ai.edge.gallery.data.markInitializationFailed
 import com.google.ai.edge.gallery.data.markInitializationStarted
 import com.google.ai.edge.gallery.data.markInitialized
 import com.google.ai.edge.gallery.data.resetInitialization
+import com.google.ai.edge.gallery.huggingface.supportsGgufOnDevice
 import com.google.ai.edge.gallery.runtime.CleanUpListener
 import com.google.ai.edge.gallery.runtime.LlmModelHelper
 import com.google.ai.edge.gallery.runtime.ResultListener
@@ -76,7 +76,7 @@ object LlamaCppModelHelper : LlmModelHelper {
     enableConversationConstrainedDecoding: Boolean,
     coroutineScope: CoroutineScope?,
   ) {
-    if (!Build.SUPPORTED_ABIS.contains("arm64-v8a")) {
+    if (!supportsGgufOnDevice()) {
       onDone("GGUF inference requires an arm64 Android device.")
       return
     }

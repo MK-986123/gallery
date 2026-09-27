@@ -116,6 +116,11 @@ fun isLiteRtLmFileName(filename: String): Boolean {
 /** Checks if a filename is a GGUF model handled by the llama.cpp runtime. */
 fun isGgufFileName(filename: String): Boolean = filename.endsWith(".gguf", ignoreCase = true)
 
+/** Android selects native libraries for the process's primary ABI. */
+fun isArm64PrimaryAbi(abis: Array<String>): Boolean = abis.firstOrNull() == "arm64-v8a"
+
+fun supportsGgufOnDevice(): Boolean = isArm64PrimaryAbi(Build.SUPPORTED_ABIS)
+
 /** The extension is only a candidate; local files must start with the GGUF container signature. */
 fun hasGgufHeader(input: InputStream): Boolean {
   val header = ByteArray(4)
@@ -150,7 +155,7 @@ private val nonAndroidPlatformTokens =
 data class DeviceHardwareInfo(
   val vendor: DeviceVendor,
   val rawSocName: String = SOC.lowercase(),
-  val supportsGguf: Boolean = Build.SUPPORTED_ABIS.contains("arm64-v8a"),
+  val supportsGguf: Boolean = supportsGgufOnDevice(),
 ) {
   /** Checks if a model filename is compatible with this device's hardware capabilities. */
   fun isCompatibleWithFile(filename: String): Boolean {

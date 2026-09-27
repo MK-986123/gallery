@@ -56,6 +56,8 @@ class GgufImportTest {
     assertTrue(supported.isCompatibleWithFile("Bonsai-Q1_0.gguf"))
     assertFalse(unsupported.isCompatibleWithFile("Bonsai-Q1_0.gguf"))
     assertTrue(unsupported.isCompatibleWithFile("model.litertlm"))
+    assertTrue(isArm64PrimaryAbi(arrayOf("arm64-v8a", "armeabi-v7a")))
+    assertFalse(isArm64PrimaryAbi(arrayOf("x86_64", "arm64-v8a")))
   }
 
   @Test
