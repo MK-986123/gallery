@@ -449,14 +449,29 @@ limitations under the License.
           const dateObj = parseISODate(d);
           const dateLabel = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-          li.innerHTML = `
-            <div class="history-date">${dateLabel}</div>
-            <div class="history-score-pill" style="background: hsl(${(item.score-1)*12}, 70%, 60%)">${item.score}</div>
-            <div class="history-comment">${item.comment || 'No notes.'}</div>
-            <button class="delete-btn" onclick="deleteEntry('${d}')" title="Delete entry">
-                <svg fill="currentColor" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-            </button>
-          `;
+          const dateDiv = document.createElement('div');
+          dateDiv.className = 'history-date';
+          dateDiv.textContent = dateLabel;
+
+          const scoreDiv = document.createElement('div');
+          scoreDiv.className = 'history-score-pill';
+          scoreDiv.style.background = `hsl(${(item.score - 1) * 12}, 70%, 60%)`;
+          scoreDiv.textContent = item.score;
+
+          const commentDiv = document.createElement('div');
+          commentDiv.className = 'history-comment';
+          commentDiv.textContent = item.comment || 'No notes.';
+
+          const deleteBtn = document.createElement('button');
+          deleteBtn.className = 'delete-btn';
+          deleteBtn.onclick = () => deleteEntry(d);
+          deleteBtn.title = 'Delete entry';
+          deleteBtn.innerHTML = '<svg fill="currentColor" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
+
+          li.appendChild(dateDiv);
+          li.appendChild(scoreDiv);
+          li.appendChild(commentDiv);
+          li.appendChild(deleteBtn);
           historyList.appendChild(li);
         });
       }
