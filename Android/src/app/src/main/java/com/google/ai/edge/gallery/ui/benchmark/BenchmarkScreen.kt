@@ -339,6 +339,23 @@ fun BenchmarkScreen(
       },
     )
   }
+
+  // Error dialog for failed benchmark.
+  if (uiState.errorMessage != null) {
+    AlertDialog(
+      title = { Text(stringResource(R.string.benchmark_error_title)) },
+      text = { Text(uiState.errorMessage ?: "") },
+      onDismissRequest = { viewModel.setErrorMessage(null) },
+      confirmButton = {
+        Button(
+          onClick = { viewModel.setErrorMessage(null) },
+          contentPadding = SMALL_BUTTON_CONTENT_PADDING,
+        ) {
+          Text(stringResource(R.string.ok))
+        }
+      },
+    )
+  }
 }
 
 private fun getStringConfigValue(values: Map<String, Any>, key: ConfigKey): String {
