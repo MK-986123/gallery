@@ -172,6 +172,7 @@ open class Config(
     fun createLlmImportConfigs(
       accelerators: List<Accelerator> = DEFAULT_ACCELERATORS,
       isForTestOnly: Boolean = false,
+      isGguf: Boolean = false,
     ): List<Config> {
       return buildList {
         add(LabelConfig(key = ConfigKeys.NAME))
@@ -180,16 +181,20 @@ open class Config(
         add(createTopKSliderConfig(key = ConfigKeys.DEFAULT_TOPK))
         add(createTopPSliderConfig(key = ConfigKeys.DEFAULT_TOPP))
         add(createTemperatureSliderConfig(key = ConfigKeys.DEFAULT_TEMPERATURE))
-        add(BooleanSwitchConfig(key = ConfigKeys.SUPPORT_IMAGE, defaultValue = false))
-        add(BooleanSwitchConfig(key = ConfigKeys.SUPPORT_AUDIO, defaultValue = false))
-        if (!isForTestOnly) {
+        if (!isGguf) {
+          add(BooleanSwitchConfig(key = ConfigKeys.SUPPORT_IMAGE, defaultValue = false))
+          add(BooleanSwitchConfig(key = ConfigKeys.SUPPORT_AUDIO, defaultValue = false))
+        }
+        if (!isForTestOnly && !isGguf) {
           add(BooleanSwitchConfig(key = ConfigKeys.SUPPORT_TINY_GARDEN, defaultValue = false))
           add(BooleanSwitchConfig(key = ConfigKeys.SUPPORT_MOBILE_ACTIONS, defaultValue = false))
         }
-        add(BooleanSwitchConfig(key = ConfigKeys.SUPPORT_THINKING, defaultValue = false))
-        add(
-          BooleanSwitchConfig(key = ConfigKeys.SUPPORT_SPECULATIVE_DECODING, defaultValue = false)
-        )
+        if (!isGguf) {
+          add(BooleanSwitchConfig(key = ConfigKeys.SUPPORT_THINKING, defaultValue = false))
+          add(
+            BooleanSwitchConfig(key = ConfigKeys.SUPPORT_SPECULATIVE_DECODING, defaultValue = false)
+          )
+        }
         add(
           SegmentedButtonConfig(
             key = ConfigKeys.COMPATIBLE_ACCELERATORS,

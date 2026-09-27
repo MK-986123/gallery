@@ -22,7 +22,9 @@ import android.os.Build
 import com.google.ai.edge.gallery.data.SOC
 import com.google.ai.edge.gallery.proto.HfModelItemProto
 import com.google.ai.edge.gallery.proto.HfSortOptionProto
+import java.io.InputStream
 import java.net.URI
+import java.nio.charset.StandardCharsets
 
 /**
  * Extracts the simple display model name from the full repository ID (e.g., extracting
@@ -31,14 +33,14 @@ import java.net.URI
 val HfModelItemProto.modelName: String
   get() = id.substringAfterLast("/")
 
-/** Checks if repo contains LiteRT model files (.litertlm or .task). */
+/** Checks if the repo contains a model file supported by a Gallery runtime. */
 fun HfModelItemProto.hasCompatibleModelFiles(): Boolean {
-  return siblingsList.any { isLiteRtLmFileName(it.rfilename) }
+  return siblingsList.any { isSupportedModelFileName(it.rfilename) }
 }
 
-/** Gets all LiteRT model files in this model card. */
+/** Gets all model files supported by a Gallery runtime in this model card. */
 fun HfModelItemProto.getCompatibleModelFiles(): List<String> {
-  return siblingsList.map { it.rfilename }.filter { isLiteRtLmFileName(it) }
+  return siblingsList.map { it.rfilename }.filter { isSupportedModelFileName(it) }
 }
 
 /** Checks if the model card has at least one file compatible with current device hardware. */
@@ -111,6 +113,30 @@ fun isLiteRtLmFileName(filename: String): Boolean {
   return lower.endsWith(".litertlm") && !lower.contains("-web")
 }
 
+/** Checks if a filename is a GGUF model handled by the llama.cpp runtime. */
+fun isGgufFileName(filename: String): Boolean = filename.endsWith(".gguf", ignoreCase = true)
+
+/** Android selects native libraries for the process's primary ABI. */
+fun isArm64PrimaryAbi(abis: Array<String>): Boolean = abis.firstOrNull() == "arm64-v8a"
+
+fun supportsGgufOnDevice(): Boolean = isArm64PrimaryAbi(Build.SUPPORTED_ABIS)
+
+/** The extension is only a candidate; local files must start with the GGUF container signature. */
+fun hasGgufHeader(input: InputStream): Boolean {
+  val header = ByteArray(4)
+  var read = 0
+  while (read < header.size) {
+    val count = input.read(header, read, header.size - read)
+    if (count <= 0) return false
+    read += count
+  }
+  return header.contentEquals("GGUF".toByteArray(StandardCharsets.US_ASCII))
+}
+
+/** Checks if a filename can be routed to one of Gallery's local LLM runtimes. */
+fun isSupportedModelFileName(filename: String): Boolean =
+  isLiteRtLmFileName(filename) || isGgufFileName(filename)
+
 /** Known mobile hardware vendors on Android devices. */
 @Suppress("ImmutableEnum")
 enum class DeviceVendor(val aliases: Set<String>) {
@@ -126,9 +152,16 @@ private val nonAndroidPlatformTokens =
   setOf("apple", "metal", "ios", "intel", "intel_lnl", "intel_ptl", "amd", "nvidia")
 
 /** Structured hardware info representation of a target device. */
-data class DeviceHardwareInfo(val vendor: DeviceVendor, val rawSocName: String = SOC.lowercase()) {
+data class DeviceHardwareInfo(
+  val vendor: DeviceVendor,
+  val rawSocName: String = SOC.lowercase(),
+  val supportsGguf: Boolean = supportsGgufOnDevice(),
+) {
   /** Checks if a model filename is compatible with this device's hardware capabilities. */
   fun isCompatibleWithFile(filename: String): Boolean {
+    if (isGgufFileName(filename)) {
+      return supportsGguf
+    }
     if (!isLiteRtLmFileName(filename)) {
       return false
     }
@@ -183,7 +216,7 @@ data class HfUrlInfo(
   val isDirectModelFile: Boolean = false,
 ) {
   companion object {
-    private val MODEL_FILE_EXTENSIONS = setOf(".litertlm", ".task")
+    private val MODEL_FILE_EXTENSIONS = setOf(".litertlm", ".task", ".gguf")
     private val HF_ACTION_KEYWORDS = setOf("resolve", "blob", "tree", "raw")
 
     private fun String.isModelFileName(): Boolean = MODEL_FILE_EXTENSIONS.any {
@@ -207,7 +240,8 @@ data class HfUrlInfo(
 
       val host = uri?.host?.lowercase().orEmpty()
       val isBareId = !trimmed.contains("://") && !host.contains(".")
-      val isHfDomain = host.isEmpty() || host.contains("huggingface.co") || isBareId
+      val isHfDomain =
+        host.isEmpty() || host == "huggingface.co" || host.endsWith(".huggingface.co") || isBareId
 
       val path = if (isBareId) trimmed else uri?.path.orEmpty()
       val segments = path.split("/").filter { it.isNotBlank() }
@@ -249,6 +283,22 @@ data class HfUrlInfo(
 
 /** Parses a Hugging Face URL to extract model ID and file name if present. */
 fun extractHfUrlInfo(rawUrl: String): HfUrlInfo = HfUrlInfo.parse(rawUrl)
+
+/** Keep the repository revision and nested file path when converting a model-card file link. */
+fun normalizeDirectModelFileUrl(rawUrl: String): String {
+  val trimmed = rawUrl.trim()
+  val absolute =
+    if (trimmed.contains("://")) trimmed
+    else if (!trimmed.substringBefore('/').contains('.')) "https://huggingface.co/$trimmed"
+    else "https://$trimmed"
+  val host = runCatching { URI(absolute).host?.lowercase() }.getOrNull()
+  if (host != "huggingface.co" && host?.endsWith(".huggingface.co") != true) return absolute
+  val segments = URI(absolute).path.split('/').filter { it.isNotBlank() }
+  if (segments.size >= 3 && segments[2] !in setOf("blob", "tree", "resolve")) {
+    return absolute.replaceFirst("/${segments[0]}/${segments[1]}/", "/${segments[0]}/${segments[1]}/resolve/main/")
+  }
+  return absolute.replaceFirst("/blob/", "/resolve/").replaceFirst("/tree/", "/resolve/")
+}
 
 /** URL query parameter value for Hugging Face sort options. */
 val HfSortOptionProto.queryValue: String

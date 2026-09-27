@@ -36,7 +36,7 @@ import com.google.ai.edge.gallery.ui.common.buildTrackableUrlAnnotatedString
  * A dialog that prompts the user to enter a Hugging Face model URL or model ID.
  *
  * This dialog serves as the entry point for importing models directly from Hugging Face. Users can
- * input a direct link to a `.litertlm` file or a Hugging Face model card URL.
+ * input a direct link to a `.litertlm` or `.gguf` file, or a Hugging Face model card URL.
  *
  * @param urlInput The current text value of the URL input field.
  * @param onUrlInputChange Callback triggered when the URL input text changes.

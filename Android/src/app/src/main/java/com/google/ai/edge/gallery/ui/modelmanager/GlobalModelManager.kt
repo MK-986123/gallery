@@ -89,6 +89,8 @@ import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.data.supportModelBenchmark
 import com.google.ai.edge.gallery.huggingface.extractHfUrlInfo
+import com.google.ai.edge.gallery.huggingface.normalizeDirectModelFileUrl
+import com.google.ai.edge.gallery.huggingface.supportsGgufOnDevice
 import com.google.ai.edge.gallery.proto.HfModelItemProto
 import com.google.ai.edge.gallery.proto.ImportedModel
 import com.google.ai.edge.gallery.ui.common.TaskIcon
@@ -556,12 +558,7 @@ fun GlobalModelManager(
           when {
             urlInfo.isDirectModelFile -> {
               val fileUri =
-                if (urlInfo.modelId != null && urlInfo.fileName != null) {
-                  "https://huggingface.co/${urlInfo.modelId}/resolve/main/${urlInfo.fileName}?download=true"
-                    .toUri()
-                } else {
-                  url.toUri()
-                }
+                (if (urlInfo.modelId != null) normalizeDirectModelFileUrl(url) else url).toUri()
               processModelUri(fileUri, true)
             }
             urlInfo.modelId != null -> {
@@ -620,16 +617,19 @@ private fun validateAndProcessModelUri(
   onValidModelUri: (Uri) -> Unit,
 ) {
   val fileName = getFileName(context = context, uri = uri)
-  Log.d(TAG, "Validating URI: $uri, fileName: $fileName, isWebImport: $isWebImport")
+  val isGguf = fileName?.endsWith(".gguf", ignoreCase = true) == true
   val hasValidExtension =
     if (isWebImport) {
-      fileName != null && fileName.endsWith(".litertlm")
+      fileName != null && (fileName.endsWith(".litertlm", true) || isGguf)
     } else {
-      fileName != null && (fileName.endsWith(".task") || fileName.endsWith(".litertlm"))
+      fileName != null &&
+        (fileName.endsWith(".task", true) || fileName.endsWith(".litertlm", true) || isGguf)
     }
 
   if (!hasValidExtension) {
     onUnsupportedModelError(getErrorMessage(context, R.string.unsupported_file_type_error))
+  } else if (isGguf && !supportsGgufOnDevice()) {
+    onUnsupportedModelError(getErrorMessage(context, R.string.gguf_arm64_required))
   } else if (fileName != null && fileName.lowercase().contains("-web")) {
     onUnsupportedModelError(getErrorMessage(context, R.string.unsupported_web_model_error))
   } else {

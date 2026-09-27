@@ -37,6 +37,7 @@ import com.google.ai.edge.gallery.data.SystemPromptRepository
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.data.awaitInitialization
 import com.google.ai.edge.gallery.proto.ChatSessionProto
+import com.google.ai.edge.gallery.runtime.llamacpp.LlamaCppModelHelper
 import com.google.ai.edge.gallery.tools.ToolAction
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageAudioClip
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageError
@@ -328,6 +329,17 @@ open class LlmChatViewModelBase(
             }
             setInProgress(false)
             setPreparing(false)
+            if (model.backendSpec.isLlamaCpp) {
+              val omitted = LlamaCppModelHelper.takeOmittedRestoreTurns(model)
+              if (omitted > 0) {
+                addMessage(
+                  model,
+                  ChatMessageWarning(
+                    "$omitted older chat messages remain visible but are outside the active model context."
+                  ),
+                )
+              }
+            }
             onDone()
           }
           is AgentEvent.Error -> {
@@ -423,12 +435,25 @@ open class LlmChatViewModelBase(
         )
       runtimeExecutor.resetSession(config = config)
 
+      if (model.backendSpec.isLlamaCpp) {
+        val omitted = LlamaCppModelHelper.takeOmittedRestoreTurns(model)
+        if (omitted > 0) {
+          addMessage(
+            model,
+            ChatMessageWarning(
+              "$omitted older chat messages remain visible but are outside the active model context."
+            ),
+          )
+        }
+      }
+
       setIsResettingSession(false)
       onDone()
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
       Log.e(TAG, "Failed to reset session: ${e.message}", e)
+      addMessage(model, ChatMessageError(content = e.message ?: "Failed to restore chat context"))
       setIsResettingSession(false)
     }
   }
@@ -482,6 +507,7 @@ open class LlmChatViewModelBase(
           throw e
         } catch (e: Exception) {
           Log.e(TAG, "Failed to restore session: ${e.message}", e)
+          addMessage(model, ChatMessageError(content = e.message ?: "Failed to restore saved chat"))
           setIsResettingSession(false)
         }
       }

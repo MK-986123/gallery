@@ -75,13 +75,13 @@ class MainActivity : ComponentActivity() {
     // Debug: Dump all intent extras to see what FCM unloads
     intent.extras?.let { extras ->
       for (key in extras.keySet()) {
-        Log.d(TAG, "onCreate Extra -> Key: $key, Value: ${extras.get(key)}")
+        Log.d(TAG, "onCreate Extra -> Key: $key")
       }
     }
 
     // Convert FCM Console data extras to intent data for GalleryNavGraph to pick up
     intent.getStringExtra("deeplink")?.let { link ->
-      Log.d(TAG, "onCreate: Found deeplink extra: $link")
+      Log.d(TAG, "onCreate: Found deeplink extra")
       if (link.startsWith("http://") || link.startsWith("https://")) {
         val browserIntent = Intent(Intent.ACTION_VIEW, link.toUri())
         startActivity(browserIntent)
@@ -189,12 +189,12 @@ class MainActivity : ComponentActivity() {
     // Debug: Dump all intent extras to see what FCM unloads
     intent.extras?.let { extras ->
       for (key in extras.keySet()) {
-        Log.d(TAG, "onNewIntent Extra -> Key: $key, Value: ${extras.get(key)}")
+        Log.d(TAG, "onNewIntent Extra -> Key: $key")
       }
     }
 
     intent.getStringExtra("deeplink")?.let { link ->
-      Log.d(TAG, "onNewIntent: Found deeplink extra: $link")
+      Log.d(TAG, "onNewIntent: Found deeplink extra")
       if (link.startsWith("http://") || link.startsWith("https://")) {
         val browserIntent = Intent(Intent.ACTION_VIEW, link.toUri())
         startActivity(browserIntent)

@@ -31,6 +31,7 @@ plugins {
 android {
   namespace = "com.google.ai.edge.gallery"
   compileSdk { this.version = release(37) { minorApiLevel = 0 } }
+  ndkVersion = "29.0.14206865"
 
   defaultConfig {
     applicationId = "com.google.aiedge.gallery"
@@ -49,6 +50,23 @@ android {
     buildConfigField("String", "FEEDBACK_API_KEY", "\"\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    externalNativeBuild {
+      cmake {
+        arguments += "-DCMAKE_BUILD_TYPE=Release"
+        arguments += "-DBUILD_SHARED_LIBS=ON"
+        arguments += "-DLLAMA_BUILD_APP=OFF"
+        arguments += "-DLLAMA_BUILD_COMMON=ON"
+        arguments += "-DLLAMA_BUILD_EXAMPLES=OFF"
+        arguments += "-DLLAMA_BUILD_TESTS=OFF"
+        arguments += "-DLLAMA_BUILD_TOOLS=OFF"
+        arguments += "-DLLAMA_OPENSSL=OFF"
+        arguments += "-DGGML_NATIVE=OFF"
+        arguments += "-DGGML_BACKEND_DL=ON"
+        arguments += "-DGGML_CPU_ALL_VARIANTS=ON"
+        arguments += "-DGGML_LLAMAFILE=OFF"
+      }
+    }
   }
 
   buildTypes {
@@ -58,6 +76,18 @@ android {
       signingConfig = signingConfigs.getByName("debug")
     }
   }
+  externalNativeBuild {
+    cmake {
+      path("src/main/cpp/CMakeLists.txt")
+      version = "3.31.6"
+    }
+  }
+  packaging {
+    // llama.cpp finds its CPU backend variants by listing nativeLibraryDir, which stays empty
+    // unless native libraries are extracted at install time.
+    jniLibs { useLegacyPackaging = true }
+  }
+
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11

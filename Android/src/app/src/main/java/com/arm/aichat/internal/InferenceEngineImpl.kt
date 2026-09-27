@@ -1,0 +1,375 @@
+package com.arm.aichat.internal
+
+import android.content.Context
+import android.util.Log
+import com.arm.aichat.InferenceEngine
+import com.arm.aichat.ChatTurn
+import com.arm.aichat.SamplingSettings
+import com.arm.aichat.internal.InferenceEngineImpl.Companion.getInstance
+import dalvik.annotation.optimization.FastNative
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.IOException
+
+/**
+ * JNI wrapper for the llama.cpp library providing Android-friendly access to large language models.
+ *
+ * This class implements a singleton pattern for managing the lifecycle of a single LLM instance.
+ * All operations are executed on a dedicated single-threaded dispatcher to ensure thread safety
+ * with the underlying C++ native code.
+ *
+ * The typical usage flow is:
+ * 1. Get instance via [getInstance]
+ * 2. Load a model with [loadModel]
+ * 3. Send prompts with [sendUserPrompt]
+ * 4. Generate responses as token streams
+ * 5. Perform [cleanUp] when done with a model
+ * 6. Properly [destroy] when completely done
+ *
+ * State transitions are managed automatically and validated at each operation.
+ *
+ * @see ai_chat.cpp for the native implementation details
+ */
+internal class InferenceEngineImpl private constructor(
+    private val nativeLibDir: String
+) : InferenceEngine {
+
+    companion object {
+        private val TAG = InferenceEngineImpl::class.java.simpleName
+
+        @Volatile
+        private var instance: InferenceEngine? = null
+
+        /**
+         * Create or obtain [InferenceEngineImpl]'s single instance.
+         *
+         * @param Context for obtaining native library directory
+         * @throws IllegalArgumentException if native library path is invalid
+         * @throws UnsatisfiedLinkError if library failed to load
+         */
+        internal fun getInstance(context: Context) =
+            instance ?: synchronized(this) {
+                val nativeLibDir = context.applicationInfo.nativeLibraryDir
+                require(nativeLibDir.isNotBlank()) { "Expected a valid native library path!" }
+
+                try {
+                    Log.i(TAG, "Instantiating InferenceEngineImpl,,,")
+                    InferenceEngineImpl(nativeLibDir).also { instance = it }
+                } catch (e: UnsatisfiedLinkError) {
+                    Log.e(TAG, "Failed to load native library from $nativeLibDir", e)
+                    throw e
+                }
+            }
+    }
+
+    /**
+     * JNI methods
+     * @see ai_chat.cpp
+     *
+     * Model loading, prompt processing, and token generation run for seconds; @FastNative would
+     * keep the garbage collector waiting on this thread for that whole time. Text crosses as UTF-8
+     * bytes because JNI's modified UTF-8 cannot carry characters such as emoji to the tokenizer.
+     */
+    // Returns the number of ggml backend devices available after loading backends.
+    private external fun init(nativeLibDir: String): Int
+
+    private external fun load(modelPath: String): Int
+
+    private external fun prepare(): Int
+
+    @FastNative
+    private external fun systemInfo(): String
+
+    private external fun benchModel(pp: Int, tg: Int, pl: Int, nr: Int): String
+
+    private external fun processSystemPrompt(systemPrompt: ByteArray): Int
+
+    private external fun replayTurns(roles: Array<String>, texts: Array<ByteArray>, reserveTokens: Int): Int
+
+    @FastNative
+    private external fun configureSampler(topK: Int, topP: Float, temperature: Float): Int
+
+    private external fun processUserPrompt(userPrompt: ByteArray, predictLength: Int): Int
+
+    /** Returns UTF-8 bytes for the next complete characters, an empty array, or null at the end. */
+    private external fun generateNextToken(): ByteArray?
+
+    private external fun unload()
+
+    private external fun shutdown()
+
+    private val _state =
+        MutableStateFlow<InferenceEngine.State>(InferenceEngine.State.Uninitialized)
+    override val state: StateFlow<InferenceEngine.State> = _state.asStateFlow()
+
+    private var _readyForSystemPrompt = false
+    @Volatile
+    private var _cancelGeneration = false
+    /** False when the native library or its CPU backend could not be loaded. */
+    @Volatile
+    private var runtimeReady = false
+
+    /**
+     * Single-threaded coroutine dispatcher & scope for LLama asynchronous operations
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val llamaDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val llamaScope = CoroutineScope(llamaDispatcher + SupervisorJob())
+
+    init {
+        llamaScope.launch {
+            try {
+                check(_state.value is InferenceEngine.State.Uninitialized) {
+                    "Cannot load native library in ${_state.value.javaClass.simpleName}!"
+                }
+                _state.value = InferenceEngine.State.Initializing
+                Log.i(TAG, "Loading native library...")
+                System.loadLibrary("ai-chat")
+                check(init(nativeLibDir) > 0) { "No llama.cpp CPU backend found in $nativeLibDir" }
+                runtimeReady = true
+                _state.value = InferenceEngine.State.Initialized
+                Log.i(TAG, "Native library loaded! System info: \n${systemInfo()}")
+
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to load native library", e)
+                _state.value = InferenceEngine.State.Error(IllegalStateException("GGUF runtime unavailable", e))
+            }
+        }
+    }
+
+    /**
+     * Load the LLM
+     */
+    override suspend fun loadModel(pathToModel: String) =
+        withContext(llamaDispatcher) {
+            check(_state.value is InferenceEngine.State.Initialized) {
+                "Cannot load model in ${_state.value.javaClass.simpleName}!"
+            }
+
+            try {
+                Log.i(TAG, "Checking access to model file")
+                File(pathToModel).let {
+                    require(it.exists()) { "File not found" }
+                    require(it.isFile) { "Not a valid file" }
+                    require(it.canRead()) { "Cannot read file" }
+                }
+
+                Log.i(TAG, "Loading model")
+                _readyForSystemPrompt = false
+                _state.value = InferenceEngine.State.LoadingModel
+                load(pathToModel).let {
+                    // TODO-han.yin: find a better way to pass other error codes
+                    if (it != 0) throw IOException("Invalid or unsupported GGUF model")
+                }
+                prepare().let {
+                    if (it == 3) throw IOException("This GGUF model's chat template is not supported")
+                    if (it != 0) throw IOException("Failed to prepare resources")
+                }
+                Log.i(TAG, "Model loaded!")
+                _readyForSystemPrompt = true
+
+                _cancelGeneration = false
+                _state.value = InferenceEngine.State.ModelReady
+            } catch (e: Exception) {
+                Log.e(TAG, e.message ?: "Error loading GGUF model", e)
+                runCatching { unload() }.onFailure { Log.w(TAG, "Failed to release GGUF model", it) }
+                _state.value = InferenceEngine.State.Error(e)
+                throw e
+            }
+        }
+
+    /**
+     * Process the plain text system prompt
+     *
+     * TODO-han.yin: return error code if system prompt not correct processed?
+     */
+    override suspend fun setSystemPrompt(prompt: String) =
+        withContext(llamaDispatcher) {
+            check(_state.value is InferenceEngine.State.ModelReady) {
+                "Cannot process system prompt in ${_state.value.javaClass.simpleName}!"
+            }
+
+            Log.i(TAG, "Sending system prompt...")
+            _readyForSystemPrompt = false
+            _state.value = InferenceEngine.State.ProcessingSystemPrompt
+            processSystemPrompt(prompt.toByteArray(Charsets.UTF_8)).let { result ->
+                if (result != 0) {
+                    RuntimeException("Failed to process system prompt: $result").also {
+                        _state.value = InferenceEngine.State.Error(it)
+                        throw it
+                    }
+                }
+            }
+            Log.i(TAG, "System prompt processed! Awaiting user prompt...")
+            _state.value = InferenceEngine.State.ModelReady
+        }
+
+    override suspend fun restoreConversation(
+        systemPrompt: String,
+        turns: List<ChatTurn>,
+        reserveTokens: Int,
+    ): Int = withContext(llamaDispatcher) {
+        check(_state.value is InferenceEngine.State.ModelReady) { "GGUF model is not ready" }
+        _state.value = InferenceEngine.State.ProcessingSystemPrompt
+        val systemPromptBytes = systemPrompt.toByteArray(Charsets.UTF_8)
+        try {
+            check(processSystemPrompt(systemPromptBytes) == 0) { "Failed to reset GGUF context" }
+            val omitted = replayTurns(
+                turns.map { it.role.nativeName }.toTypedArray(),
+                turns.map { it.text.toByteArray(Charsets.UTF_8) }.toTypedArray(),
+                reserveTokens,
+            )
+            check(omitted >= 0) { "Failed to restore GGUF chat context" }
+            omitted
+        } catch (e: Exception) {
+            // Leave a clean system-only context so a subsequent restore can be retried.
+            runCatching { processSystemPrompt(systemPromptBytes) }
+            throw e
+        } finally {
+            _state.value = InferenceEngine.State.ModelReady
+        }
+    }
+
+    override suspend fun setSampling(settings: SamplingSettings) = withContext(llamaDispatcher) {
+        check(_state.value is InferenceEngine.State.ModelReady) { "GGUF model is not ready" }
+        require(settings.topK in 1..100 && settings.topP in 0f..1f &&
+            settings.temperature in 0f..2f) { "Invalid GGUF sampling settings" }
+        check(configureSampler(settings.topK, settings.topP, settings.temperature) == 0) {
+            "Failed to configure GGUF sampler"
+        }
+    }
+
+    /**
+     * Send plain text user prompt to LLM, which starts generating tokens in a [Flow]
+     */
+    override fun sendUserPrompt(
+        message: String,
+        predictLength: Int,
+    ): Flow<String> = flow {
+        require(message.isNotEmpty()) { "User prompt discarded due to being empty!" }
+        check(_state.value is InferenceEngine.State.ModelReady) {
+            "User prompt discarded due to: ${_state.value.javaClass.simpleName}"
+        }
+
+        try {
+            Log.i(TAG, "Sending user prompt...")
+            _readyForSystemPrompt = false
+            _state.value = InferenceEngine.State.ProcessingUserPrompt
+
+            processUserPrompt(message.toByteArray(Charsets.UTF_8), predictLength).let { result ->
+                if (result != 0) {
+                    throw IOException(
+                        if (result == 1) "GGUF context is full. Shorten the prompt or start a new chat."
+                        else "Failed to process GGUF prompt (code $result)"
+                    )
+                }
+            }
+
+            Log.i(TAG, "User prompt processed. Generating assistant prompt...")
+            _state.value = InferenceEngine.State.Generating
+            while (!_cancelGeneration) {
+                generateNextToken()?.let { utf8token ->
+                    if (utf8token.isNotEmpty()) emit(String(utf8token, Charsets.UTF_8))
+                } ?: break
+            }
+            if (_cancelGeneration) {
+                Log.i(TAG, "Assistant generation aborted per requested.")
+            } else {
+                Log.i(TAG, "Assistant generation complete. Awaiting user prompt...")
+            }
+            _state.value = InferenceEngine.State.ModelReady
+        } catch (e: CancellationException) {
+            Log.i(TAG, "Assistant generation's flow collection cancelled.")
+            _state.value = InferenceEngine.State.ModelReady
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during generation!", e)
+            // The model stays loaded and every request rebuilds its context, so a rejected or
+            // failed prompt must not block the next one.
+            _state.value = InferenceEngine.State.ModelReady
+            throw e
+        }
+    }.flowOn(llamaDispatcher)
+
+    /**
+     * Benchmark the model
+     */
+    override suspend fun bench(pp: Int, tg: Int, pl: Int, nr: Int): String =
+        withContext(llamaDispatcher) {
+            check(_state.value is InferenceEngine.State.ModelReady) {
+                "Benchmark request discarded due to: $state"
+            }
+            Log.i(TAG, "Start benchmark (pp: $pp, tg: $tg, pl: $pl, nr: $nr)")
+            _readyForSystemPrompt = false   // Just to be safe
+            _state.value = InferenceEngine.State.Benchmarking
+            benchModel(pp, tg, pl, nr).also {
+                _state.value = InferenceEngine.State.ModelReady
+            }
+        }
+
+    /**
+     * Unloads the model and frees resources, or reset error states
+     */
+    override fun cleanUp() {
+        _cancelGeneration = true
+        runBlocking(llamaDispatcher) {
+            when (val state = _state.value) {
+                is InferenceEngine.State.ModelReady -> {
+                    Log.i(TAG, "Unloading model and free resources...")
+                    _readyForSystemPrompt = false
+                    _state.value = InferenceEngine.State.UnloadingModel
+
+                    unload()
+
+                    _state.value = InferenceEngine.State.Initialized
+                    Log.i(TAG, "Model unloaded!")
+                    Unit
+                }
+
+                is InferenceEngine.State.Error -> {
+                    // Without the native runtime there is nothing to release, and calling into it
+                    // would throw UnsatisfiedLinkError.
+                    if (!runtimeReady) {
+                        throw IllegalStateException("GGUF runtime unavailable", state.exception)
+                    }
+                    Log.i(TAG, "Releasing GGUF resources after an error...")
+                    unload()
+                    _state.value = InferenceEngine.State.Initialized
+                    Unit
+                }
+
+                else -> throw IllegalStateException("Cannot unload model in ${state.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /**
+     * Cancel all ongoing coroutines and free GGML backends
+     */
+    override fun destroy() {
+        _cancelGeneration = true
+        runBlocking(llamaDispatcher) {
+            _readyForSystemPrompt = false
+            when(_state.value) {
+                is InferenceEngine.State.Uninitialized -> {}
+                is InferenceEngine.State.Initialized -> shutdown()
+                else -> { unload(); shutdown() }
+            }
+        }
+        llamaScope.cancel()
+    }
+}

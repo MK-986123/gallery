@@ -494,7 +494,11 @@
   <string name="previous" translatable="true" description="Button text to navigate to the previous step. [CHAR_LIMIT=18]">Previous</string>
   <string name="next" translatable="true" description="Button text to navigate to the next step. [CHAR_LIMIT=18]">Next</string>
   <string name="unsupported_model_title" translatable="true" description="Title of the dialog showing that the imported model type is unsupported. [CHAR_LIMIT=37]">Unsupported model type</string>
-  <string name="unsupported_file_type_error" translatable="true" description="Message informing the user that only .task or .litertlm file formats are supported. [CHAR_LIMIT=94]">Only \".task\" or \".litertlm\" file type is supported.</string>
+  <string name="unsupported_file_type_error" translatable="true" description="Message listing supported model file types.">Only .task, .litertlm, or .gguf model files are supported.</string>
+  <string name="gguf_arm64_required">GGUF inference requires an arm64 Android device.</string>
+  <string name="gguf_import_description">GGUF candidate: text chat on CPU only. Compatibility is confirmed when the model loads.</string>
+  <string name="invalid_gguf_file">This file does not have a valid GGUF header. Select another file.</string>
+  <string name="gguf_already_imported">This GGUF file is already imported. Choose a different file name or remove the existing import.</string>
   <string name="unsupported_web_model_error" translatable="true" description="Message explaining that the model is only for web browsers and not supported on the Android application. [CHAR_LIMIT=121]">Looks like the model is a web-only model and is not supported by the app.</string>
   <string name="file_too_large_warning" translatable="true" description="Warning label when a model file size exceeds device memory limit. [CHAR_LIMIT=50]">Likely too large for device RAM</string>
   <string name="incompatible_device_warning" translatable="true" description="Warning label when a model file is incompatible with device hardware. [CHAR_LIMIT=60]">Likely incompatible with device hardware</string>
@@ -502,11 +506,11 @@
   <string name="copy_url" translatable="true" description="Button label or accessibility action to copy model URL to clipboard. [CHAR_LIMIT=18]">Copy URL</string>
   <string name="url_copied" translatable="true" description="Toast message shown after model URL is copied to clipboard. [CHAR_LIMIT=45]">URL copied to clipboard</string>
   <string name="compatible_files_header" translatable="true" description="Header for compatible files section showing count. [CHAR_LIMIT=40]">Compatible Files (%1$d):</string>
-  <string name="compatible_files_subheader" translatable="true" description="Subheader explaining compatible model files. [CHAR_LIMIT=90]">LiteRT-LM files compatible with AI Edge Gallery.</string>
+  <string name="compatible_files_subheader" translatable="true" description="Subheader explaining compatible model files.">LiteRT-LM files and GGUF candidates supported by this device.</string>
   <string name="other_files_header" translatable="true" description="Header for incompatible/other files section showing count. [CHAR_LIMIT=32]">Other Files (%1$d):</string>
   <string name="other_files_subheader" translatable="true" description="Subheader explaining other model files. [CHAR_LIMIT=93]">Files that may not be compatible with AI Edge Gallery.</string>
   <string name="incompatible_file_selection_prompt" translatable="true" description="Prompt shown when user taps an incompatible file. [CHAR_LIMIT=142]">This file may not be compatible. You can still copy the file URL to import it directly.</string>
-  <string name="hf_no_model_files_in_card" translatable="true" description="Error message when no LiteRT model files are found in a Hugging Face repository card. [CHAR_LIMIT=100]">No LiteRT model files (.litertlm) found in this model card.</string>
+  <string name="hf_no_model_files_in_card" translatable="true" description="Error message when no supported model files are found in a Hugging Face repository card.">No supported .litertlm or .gguf model files found in this model card.</string>
   <string name="hf_last_updated" translatable="true" description="Label showing when a model was last updated. [CHAR_LIMIT=21]">Updated %1$s</string>
   <string name="could_not_fetch_model_details" translatable="true" description="Error message when fetching Hugging Face model details fails. [CHAR_LIMIT=123]">Unable to load model details for %1$s. Please check the URL and try again.</string>
   <string name="test_chat" translatable="true" description="Title for the Test chat task screen where side-loaded models are tested. [CHAR_LIMIT=20]">Test chat</string>

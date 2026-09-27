@@ -67,6 +67,7 @@ import com.google.ai.edge.gallery.data.markInitialized
 import com.google.ai.edge.gallery.data.resetInitialization
 import com.google.ai.edge.gallery.firebaseAnalytics
 import com.google.ai.edge.gallery.huggingface.HuggingFaceApiClient
+import com.google.ai.edge.gallery.huggingface.isGgufFileName
 import com.google.ai.edge.gallery.proto.AccessTokenData
 import com.google.ai.edge.gallery.proto.HfModelItemProto
 import com.google.ai.edge.gallery.proto.ImportedModel
@@ -1257,7 +1258,14 @@ constructor(
           var version = BuildConfig.VERSION_NAME.replace(".", "_")
           val url = getAllowlistUrl(version)
           Log.d(TAG, "Loading model allowlist from internet. Url: $url")
-          val data = getJsonResponse<ModelAllowlist>(url = url)
+          var data = getJsonResponse<ModelAllowlist>(url = url)
+          // The version is bumped before its allowlist is published, so use the previous one.
+          val previousVersion = getPreviousAllowlistVersion(version)
+          if (data == null && previousVersion != null) {
+            val previousUrl = getAllowlistUrl(previousVersion)
+            Log.w(TAG, "Loading previous model allowlist from internet. Url: $previousUrl")
+            data = getJsonResponse<ModelAllowlist>(url = previousUrl)
+          }
           modelAllowlist = data?.jsonObj
 
           if (modelAllowlist == null) {
@@ -1512,7 +1520,6 @@ constructor(
     }
 
     val textInputHistory = dataStoreRepository.readTextInputHistory()
-    Log.d(TAG, "text input history: $textInputHistory")
 
     Log.d(TAG, "model download status: $modelDownloadStatus")
     return ModelManagerUiState(
@@ -1526,26 +1533,28 @@ constructor(
   }
 
   private fun createModelFromImportedModelInfo(info: ImportedModel): Model {
-    val accelerators: MutableList<Accelerator> =
+    val isGguf = isGgufFileName(info.fileName)
+    val importedAccelerators: MutableList<Accelerator> =
       info.llmConfig.compatibleAcceleratorsList
         .mapNotNull { acceleratorLabel ->
           when (acceleratorLabel.trim()) {
             Accelerator.GPU.label -> Accelerator.GPU
             Accelerator.CPU.label -> Accelerator.CPU
             Accelerator.NPU.label -> Accelerator.NPU
-
-            else -> null // Ignore unknown accelerator labels
+            else -> null
           }
         }
         .ifEmpty { listOf(Accelerator.CPU) }
         .toMutableList()
+    val accelerators: List<Accelerator> =
+      if (isGguf) listOf(Accelerator.CPU) else importedAccelerators
     val llmMaxToken = info.llmConfig.defaultMaxTokens.takeIf { it > 0 } ?: DEFAULT_MAX_TOKEN
-    val llmSupportImage = info.llmConfig.supportImage
-    val llmSupportAudio = info.llmConfig.supportAudio
-    val llmSupportTinyGarden = info.llmConfig.supportTinyGarden
-    val llmSupportMobileActions = info.llmConfig.supportMobileActions
-    val llmSupportThinking = info.llmConfig.supportThinking
-    val llmSupportSpeculativeDecoding = info.llmConfig.supportSpeculativeDecoding
+    val llmSupportImage = !isGguf && info.llmConfig.supportImage
+    val llmSupportAudio = !isGguf && info.llmConfig.supportAudio
+    val llmSupportTinyGarden = !isGguf && info.llmConfig.supportTinyGarden
+    val llmSupportMobileActions = !isGguf && info.llmConfig.supportMobileActions
+    val llmSupportThinking = !isGguf && info.llmConfig.supportThinking
+    val llmSupportSpeculativeDecoding = !isGguf && info.llmConfig.supportSpeculativeDecoding
     val isForTestOnly = ModelUtils.isImportedUrlForTestOnly(info.url)
     val configs: MutableList<Config> =
       createLlmChatConfigs(
@@ -1574,7 +1583,6 @@ constructor(
         downloadFileName = info.fileName,
         imported = true,
       )
-    // We assume all imported models are LLM for now.
     val llmProfile =
       LlmProfile(
         supportTinyGarden = llmSupportTinyGarden,
@@ -1592,10 +1600,13 @@ constructor(
         supportAudio = llmSupportAudio,
         capabilities = capabilityToTaskTypes.keys.toList(),
         capabilityToTaskTypes = capabilityToTaskTypes,
-        backendSpec = BackendSpec(runtimeType = RuntimeType.LITERT_LM, accelerators = accelerators),
+        backendSpec =
+          BackendSpec(
+            runtimeType = if (isGguf) RuntimeType.LLAMA_CPP else RuntimeType.LITERT_LM,
+            accelerators = accelerators,
+          ),
       )
     model.preProcess()
-
     return model
   }
 
@@ -1822,6 +1833,14 @@ constructor(
 
 private fun getAllowlistUrl(version: String): String {
   return "$ALLOWLIST_BASE_URL/${version}.json"
+}
+
+/** Returns the allowlist version before [version] ("1_0_19" for "1_0_20"), or null if none. */
+internal fun getPreviousAllowlistVersion(version: String): String? {
+  val parts = version.split("_")
+  val patch = parts.last().toIntOrNull() ?: return null
+  if (patch <= 0) return null
+  return (parts.dropLast(1) + (patch - 1).toString()).joinToString("_")
 }
 
 /**
