@@ -33,7 +33,7 @@ class NewCustomAction(val param: String) : Action(
 In [MobileActionsTools.kt](Android/src/app/src/main/java/com/google/ai/edge/gallery/customtasks/mobileactions/MobileActionsTools.kt), create a new function annotated with `@Tool` and `@ToolParam`. This function should call the `onFunctionCalled` callback to pass the specific action to your app logic.
 
 ```kotlin
-class MobileActionsTools(val onFunctionCalled: (Action) -> Unit): Toolset {
+class MobileActionsTools(val onFunctionCalled: (Action) -> Unit): ToolSet {
   // ... existing tools
 
   /** Description for the model. */
