@@ -3,7 +3,8 @@ package com.arm.aichat.internal
 import android.content.Context
 import android.util.Log
 import com.arm.aichat.InferenceEngine
-import com.arm.aichat.UnsupportedArchitectureException
+import com.arm.aichat.ChatTurn
+import com.arm.aichat.SamplingSettings
 import com.arm.aichat.internal.InferenceEngineImpl.Companion.getInstance
 import dalvik.annotation.optimization.FastNative
 import kotlinx.coroutines.CancellationException
@@ -97,6 +98,11 @@ internal class InferenceEngineImpl private constructor(
     @FastNative
     private external fun processSystemPrompt(systemPrompt: String): Int
 
+    private external fun replayTurns(roles: Array<String>, texts: Array<String>, reserveTokens: Int): Int
+
+    @FastNative
+    private external fun configureSampler(topK: Int, topP: Float, temperature: Float): Int
+
     @FastNative
     private external fun processUserPrompt(userPrompt: String, predictLength: Int): Int
 
@@ -137,9 +143,9 @@ internal class InferenceEngineImpl private constructor(
                 _state.value = InferenceEngine.State.Initialized
                 Log.i(TAG, "Native library loaded! System info: \n${systemInfo()}")
 
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Failed to load native library", e)
-                throw e
+                _state.value = InferenceEngine.State.Error(IllegalStateException("GGUF runtime unavailable", e))
             }
         }
     }
@@ -154,19 +160,19 @@ internal class InferenceEngineImpl private constructor(
             }
 
             try {
-                Log.i(TAG, "Checking access to model file... \n$pathToModel")
+                Log.i(TAG, "Checking access to model file")
                 File(pathToModel).let {
                     require(it.exists()) { "File not found" }
                     require(it.isFile) { "Not a valid file" }
                     require(it.canRead()) { "Cannot read file" }
                 }
 
-                Log.i(TAG, "Loading model... \n$pathToModel")
+                Log.i(TAG, "Loading model")
                 _readyForSystemPrompt = false
                 _state.value = InferenceEngine.State.LoadingModel
                 load(pathToModel).let {
                     // TODO-han.yin: find a better way to pass other error codes
-                    if (it != 0) throw UnsupportedArchitectureException()
+                    if (it != 0) throw IOException("Invalid or unsupported GGUF model")
                 }
                 prepare().let {
                     if (it != 0) throw IOException("Failed to prepare resources")
@@ -177,7 +183,8 @@ internal class InferenceEngineImpl private constructor(
                 _cancelGeneration = false
                 _state.value = InferenceEngine.State.ModelReady
             } catch (e: Exception) {
-                Log.e(TAG, (e.message ?: "Error loading model") + "\n" + pathToModel, e)
+                Log.e(TAG, e.message ?: "Error loading GGUF model", e)
+                runCatching { unload() }.onFailure { Log.w(TAG, "Failed to release GGUF model", it) }
                 _state.value = InferenceEngine.State.Error(e)
                 throw e
             }
@@ -209,6 +216,40 @@ internal class InferenceEngineImpl private constructor(
             _state.value = InferenceEngine.State.ModelReady
         }
 
+    override suspend fun restoreConversation(
+        systemPrompt: String,
+        turns: List<ChatTurn>,
+        reserveTokens: Int,
+    ): Int = withContext(llamaDispatcher) {
+        check(_state.value is InferenceEngine.State.ModelReady) { "GGUF model is not ready" }
+        _state.value = InferenceEngine.State.ProcessingSystemPrompt
+        try {
+            check(processSystemPrompt(systemPrompt) == 0) { "Failed to reset GGUF context" }
+            val omitted = replayTurns(
+                turns.map { it.role.nativeName }.toTypedArray(),
+                turns.map { it.text }.toTypedArray(),
+                reserveTokens,
+            )
+            check(omitted >= 0) { "Failed to restore GGUF chat context" }
+            omitted
+        } catch (e: Exception) {
+            // Leave a clean system-only context so a subsequent restore can be retried.
+            runCatching { processSystemPrompt(systemPrompt) }
+            throw e
+        } finally {
+            _state.value = InferenceEngine.State.ModelReady
+        }
+    }
+
+    override suspend fun setSampling(settings: SamplingSettings) = withContext(llamaDispatcher) {
+        check(_state.value is InferenceEngine.State.ModelReady) { "GGUF model is not ready" }
+        require(settings.topK in 1..100 && settings.topP in 0f..1f &&
+            settings.temperature in 0f..2f) { "Invalid GGUF sampling settings" }
+        check(configureSampler(settings.topK, settings.topP, settings.temperature) == 0) {
+            "Failed to configure GGUF sampler"
+        }
+    }
+
     /**
      * Send plain text user prompt to LLM, which starts generating tokens in a [Flow]
      */
@@ -228,8 +269,10 @@ internal class InferenceEngineImpl private constructor(
 
             processUserPrompt(message, predictLength).let { result ->
                 if (result != 0) {
-                    Log.e(TAG, "Failed to process user prompt: $result")
-                    return@flow
+                    throw IOException(
+                        if (result == 1) "GGUF context is full. Shorten the prompt or start a new chat."
+                        else "Failed to process GGUF prompt (code $result)"
+                    )
                 }
             }
 
@@ -293,9 +336,9 @@ internal class InferenceEngineImpl private constructor(
                 }
 
                 is InferenceEngine.State.Error -> {
-                    Log.i(TAG, "Resetting error states...")
+                    Log.i(TAG, "Releasing GGUF resources after an error...")
+                    unload()
                     _state.value = InferenceEngine.State.Initialized
-                    Log.i(TAG, "States reset!")
                     Unit
                 }
 

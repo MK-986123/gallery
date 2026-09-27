@@ -7,8 +7,9 @@ set(CMAKE_C_STANDARD_REQUIRED TRUE)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 
-if(NOT DEFINED ANDROID_ABI OR NOT ANDROID_ABI STREQUAL "arm64-v8a")
-  message(FATAL_ERROR "Gallery llama.cpp backend currently supports arm64-v8a only")
+if(NOT ANDROID_ABI STREQUAL "arm64-v8a")
+  # Other ABIs retain the existing Gallery runtimes without the optional GGUF backend.
+  return()
 endif()
 
 set(GGML_SYSTEM_ARCH "ARM")
@@ -26,7 +27,7 @@ FetchContent_MakeAvailable(llama)
 add_library(
   ai-chat
   SHARED
-  "${llama_SOURCE_DIR}/examples/llama.android/lib/src/main/cpp/ai_chat.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/ai_chat.cpp"
 )
 
 target_compile_definitions(
@@ -45,6 +46,7 @@ target_include_directories(
   "${llama_SOURCE_DIR}/include"
   "${llama_SOURCE_DIR}/ggml/include"
   "${llama_SOURCE_DIR}/ggml/src"
+  "${llama_SOURCE_DIR}/examples/llama.android/lib/src/main/cpp"
 )
 
 target_link_libraries(

@@ -4,6 +4,10 @@ import com.arm.aichat.InferenceEngine.State
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
+enum class ChatRole(val nativeName: String) { USER("user"), ASSISTANT("assistant") }
+data class ChatTurn(val role: ChatRole, val text: String)
+data class SamplingSettings(val topK: Int, val topP: Float, val temperature: Float)
+
 /**
  * Interface defining the core LLM inference operations.
  */
@@ -24,6 +28,12 @@ interface InferenceEngine {
      * Sends a system prompt to the loaded model
      */
     suspend fun setSystemPrompt(systemPrompt: String)
+
+    /** Replays saved text turns without generating responses; returns the number of older turns omitted. */
+    suspend fun restoreConversation(systemPrompt: String, turns: List<ChatTurn>, reserveTokens: Int): Int
+
+    /** Applies the chat controls before the next generated response. */
+    suspend fun setSampling(settings: SamplingSettings)
 
     /**
      * Sends a user prompt to the loaded model and returns a Flow of generated tokens.

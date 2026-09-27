@@ -73,6 +73,9 @@ import com.google.ai.edge.gallery.data.IMPORTS_DIR
 import com.google.ai.edge.gallery.data.ModelUtils
 import com.google.ai.edge.gallery.huggingface.HuggingFaceApiClient
 import com.google.ai.edge.gallery.huggingface.extractHfUrlInfo
+import com.google.ai.edge.gallery.huggingface.isGgufFileName
+import com.google.ai.edge.gallery.huggingface.hasGgufHeader
+import com.google.ai.edge.gallery.huggingface.normalizeDirectModelFileUrl
 import com.google.ai.edge.gallery.proto.ImportedModel
 import com.google.ai.edge.gallery.proto.importedModel
 import com.google.ai.edge.gallery.ui.common.ConfigEditorsPanel
@@ -81,10 +84,10 @@ import com.google.ai.edge.gallery.ui.common.humanReadableSize
 import com.google.ai.edge.gallery.ui.common.isHttpOrHttps
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLDecoder
-import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -112,20 +115,22 @@ fun ModelImportDialog(
   accessToken: String? = null,
 ) {
   val context = LocalContext.current
-  val info = remember { getFileSizeAndDisplayNameFromUri(context = context, uri = uri) }
-  var fileSize by remember { mutableLongStateOf(info.first) }
-  val fileName by remember { mutableStateOf(ensureValidFileName(info.second)) }
+  val info = remember(uri) { getFileSizeAndDisplayNameFromUri(context = context, uri = uri) }
+  var fileSize by remember(uri) { mutableLongStateOf(info.first) }
+  val fileName by remember(uri) { mutableStateOf(ensureValidFileName(info.second)) }
+  val isGguf = isGgufFileName(fileName)
   val importConfigs =
-    remember(uri) {
+    remember(uri, isGguf) {
       Config.createLlmImportConfigs(
-        accelerators = SUPPORTED_ACCELERATORS,
+        accelerators = if (isGguf) listOf(Accelerator.CPU) else SUPPORTED_ACCELERATORS,
         isForTestOnly = ModelUtils.isImportedUrlForTestOnly(uri.toString()),
+        isGguf = isGguf,
       )
     }
 
   // Indicates that the file size is still being fetched and we should disable the import button
   // until it's done.
-  var isFetchingSize by remember { mutableStateOf(isHttpOrHttps(uri)) }
+  var isFetchingSize by remember(uri) { mutableStateOf(isHttpOrHttps(uri)) }
 
   LaunchedEffect(uri) {
     if (isHttpOrHttps(uri)) {
@@ -150,7 +155,7 @@ fun ModelImportDialog(
     }
   }
 
-  val initialValues: Map<String, Any> = remember {
+  val initialValues: Map<String, Any> = remember(uri, isGguf, defaultValues) {
     mutableMapOf<String, Any>().apply {
       for (config in importConfigs) {
         put(config.key.label, config.defaultValue)
@@ -164,7 +169,7 @@ fun ModelImportDialog(
       }
     }
   }
-  val values: SnapshotStateMap<String, Any> = remember {
+  val values: SnapshotStateMap<String, Any> = remember(uri, initialValues) {
     mutableStateMapOf<String, Any>().apply { putAll(initialValues) }
   }
   val interactionSource = remember { MutableInteractionSource() }
@@ -196,6 +201,8 @@ fun ModelImportDialog(
           modifier = Modifier.verticalScroll(rememberScrollState()).weight(1f, fill = false),
           verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+          if (isGguf) Text(stringResource(R.string.gguf_import_description))
+          if (fileSize > 0L) Text(fileSize.humanReadableSize())
           // Default configs for users to set.
           ConfigEditorsPanel(configs = importConfigs, values = values)
         }
@@ -347,20 +354,23 @@ private fun importModel(
   coroutineScope.launch(Dispatchers.IO) {
     // If it's a model from the web, we don't need to copy the file over.
     if (isHttpOrHttps(uri)) {
-      Log.d(TAG, "importing web model from $uri. File name: $fileName. File size: $fileSize")
-      // Simulate a quick progress animation to show the user it's being added
-      // for (i in 1..10) {
-      //   kotlinx.coroutines.delay(50)
-      //   onProgress(i.toFloat() / 10f)
-      // }
-      Log.d(TAG, "import done for web model")
       withContext(Dispatchers.Main) { onDone() }
       return@launch
     }
 
-    // Get the last component of the uri path as the imported file name.
-    val decodedUri = URLDecoder.decode(uri.toString(), StandardCharsets.UTF_8.name())
-    Log.d(TAG, "importing model from $decodedUri. File name: $fileName. File size: $fileSize")
+    val isGguf = isGgufFileName(fileName)
+    if (isGguf) {
+      val hasGgufHeader =
+        runCatching {
+          context.contentResolver.openInputStream(uri)?.use { input ->
+            hasGgufHeader(input)
+          } == true
+        }.getOrDefault(false)
+      if (!hasGgufHeader) {
+        withContext(Dispatchers.Main) { onError(context.getString(R.string.invalid_gguf_file)) }
+        return@launch
+      }
+    }
 
     val modelsDir = getModelStorageDir(context)
 
@@ -372,41 +382,61 @@ private fun importModel(
 
     // Import by copying the file over.
     val outputFile = File(modelsDir, "$IMPORTS_DIR/$fileName")
-    val outputStream = FileOutputStream(outputFile)
+    if (isGguf && outputFile.exists()) {
+      withContext(Dispatchers.Main) { onError(context.getString(R.string.gguf_already_imported)) }
+      return@launch
+    }
+    val targetFile =
+      try {
+        if (isGguf) File.createTempFile("gguf-import-", ".part", importsDir) else outputFile
+      } catch (e: IOException) {
+        withContext(Dispatchers.Main) { onError(context.getString(R.string.failed_to_import)) }
+        return@launch
+      }
     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
     var bytesRead: Int
     var lastSetProgressTs: Long = 0
     var importedBytes = 0L
-    val inputStream = context.contentResolver.openInputStream(uri)
     try {
-      if (inputStream != null) {
-        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-          ensureActive()
-          outputStream.write(buffer, 0, bytesRead)
-          importedBytes += bytesRead
+      context.contentResolver.openInputStream(uri).use { inputStream ->
+        if (inputStream == null) throw IOException("Could not open selected model file")
+        FileOutputStream(targetFile).use { outputStream ->
+          while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+            ensureActive()
+            outputStream.write(buffer, 0, bytesRead)
+            importedBytes += bytesRead
 
-          // Report progress every 200 ms.
-          val curTs = System.currentTimeMillis()
-          if (curTs - lastSetProgressTs > 200) {
-            Log.d(TAG, "importing progress: $importedBytes, $fileSize")
-            lastSetProgressTs = curTs
-            if (fileSize != 0L) {
-              onProgress(importedBytes.toFloat() / fileSize.toFloat())
+            // Report progress every 200 ms.
+            val curTs = System.currentTimeMillis()
+            if (curTs - lastSetProgressTs > 200) {
+              Log.d(TAG, "importing progress: $importedBytes, $fileSize")
+              lastSetProgressTs = curTs
+              if (fileSize != 0L) {
+                onProgress(importedBytes.toFloat() / fileSize.toFloat())
+              }
             }
           }
         }
       }
     } catch (e: CancellationException) {
+      if (isGguf) targetFile.delete()
       throw e
     } catch (e: Exception) {
       Log.e(TAG, "Failed to import model", e)
+      if (isGguf) targetFile.delete()
       withContext(Dispatchers.Main) {
         onError(e.message ?: context.getString(R.string.failed_to_import))
       }
       return@launch
-    } finally {
-      inputStream?.close()
-      outputStream.close()
+    }
+    if (isGguf) {
+      try {
+        Files.move(targetFile.toPath(), outputFile.toPath())
+      } catch (e: IOException) {
+        targetFile.delete()
+        withContext(Dispatchers.Main) { onError(context.getString(R.string.failed_to_import)) }
+        return@launch
+      }
     }
     Log.d(TAG, "import done")
     withContext(Dispatchers.Main) {
@@ -446,11 +476,7 @@ private fun getFileSizeAndDisplayNameFromUri(context: Context, uri: Uri): Pair<L
 
 // Get the download url for the model.
 private fun getDownloadUrl(uri: Uri): String {
-  return if (uri.toString().contains("huggingface.co") && uri.toString().contains("/blob/")) {
-    uri.toString().replaceFirst("/blob/", "/resolve/")
-  } else {
-    uri.toString()
-  }
+  return normalizeDirectModelFileUrl(uri.toString())
 }
 
 /**
@@ -497,7 +523,7 @@ private suspend fun fetchHuggingFaceFileSize(
       }
     } catch (e: Exception) {
       if (e is CancellationException) throw e
-      Log.w(TAG, "HuggingFaceApiClient lookup failed for $urlStr", e)
+      Log.w(TAG, "Hugging Face file size lookup failed", e)
     }
   }
   return 0L
@@ -535,7 +561,7 @@ private suspend fun fetchHttpFileSize(urlStr: String): Long {
     }
   } catch (e: Exception) {
     if (e is CancellationException) throw e
-    Log.w(TAG, "HTTP probe failed for $urlStr", e)
+    Log.w(TAG, "HTTP file size probe failed", e)
   } finally {
     connection.disconnect()
   }

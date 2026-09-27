@@ -7,12 +7,19 @@ package com.google.ai.edge.gallery.runtime.llamacpp
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.Build
 import android.util.Log
 import com.arm.aichat.AiChat
+import com.arm.aichat.ChatRole
+import com.arm.aichat.ChatTurn
 import com.arm.aichat.InferenceEngine
+import com.arm.aichat.SamplingSettings
 import com.arm.aichat.isModelLoaded
 import com.google.ai.edge.gallery.data.ConfigKeys
 import com.google.ai.edge.gallery.data.DEFAULT_MAX_TOKEN
+import com.google.ai.edge.gallery.data.DEFAULT_TOPK
+import com.google.ai.edge.gallery.data.DEFAULT_TOPP
+import com.google.ai.edge.gallery.data.DEFAULT_TEMPERATURE
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.markInitializationFailed
 import com.google.ai.edge.gallery.data.markInitializationStarted
@@ -23,6 +30,7 @@ import com.google.ai.edge.gallery.runtime.LlmModelHelper
 import com.google.ai.edge.gallery.runtime.ResultListener
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.Role
 import com.google.ai.edge.litertlm.ToolProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -43,9 +51,19 @@ private data class LlamaCppModelInstance(
   val scope: CoroutineScope,
   var generationJob: Job? = null,
   var cleanUpListener: CleanUpListener? = null,
+  var systemPrompt: String = "",
+  var turns: List<ChatTurn> = emptyList(),
+  @Volatile
+  var omittedRestoreTurns: Int = 0,
+  var restoreFailed: Boolean = false,
 )
 
 object LlamaCppModelHelper : LlmModelHelper {
+  fun takeOmittedRestoreTurns(model: Model): Int {
+    val instance = model.instance as? LlamaCppModelInstance ?: return 0
+    return instance.omittedRestoreTurns.also { instance.omittedRestoreTurns = 0 }
+  }
+
   override fun initialize(
     context: Context,
     model: Model,
@@ -58,6 +76,10 @@ object LlamaCppModelHelper : LlmModelHelper {
     enableConversationConstrainedDecoding: Boolean,
     coroutineScope: CoroutineScope?,
   ) {
+    if (!Build.SUPPORTED_ABIS.contains("arm64-v8a")) {
+      onDone("GGUF inference requires an arm64 Android device.")
+      return
+    }
     if (model.instance != null) {
       model.markInitialized()
       onDone("")
@@ -76,14 +98,19 @@ object LlamaCppModelHelper : LlmModelHelper {
               it is InferenceEngine.State.Error
           }
 
-        if (state is InferenceEngine.State.ModelReady || state is InferenceEngine.State.Error) {
+        if (state is InferenceEngine.State.Error || state is InferenceEngine.State.ModelReady) {
           engine.cleanUp()
         }
 
         engine.loadModel(model.getPath(context))
         engine.setSystemPrompt(systemInstruction?.toString().orEmpty())
 
-        model.markInitialized(LlamaCppModelInstance(engine = engine, scope = scope))
+        model.markInitialized(
+          LlamaCppModelInstance(
+            engine = engine, scope = scope,
+            systemPrompt = systemInstruction?.toString().orEmpty(),
+          )
+        )
         onDone("")
       } catch (e: Exception) {
         Log.e(TAG, "Failed to initialize llama.cpp model '${model.name}'", e)
@@ -107,10 +134,26 @@ object LlamaCppModelHelper : LlmModelHelper {
     runBlocking(Dispatchers.IO) {
       instance.generationJob?.cancelAndJoin()
       instance.generationJob = null
-      instance.engine.setSystemPrompt(systemInstruction?.toString().orEmpty())
-    }
-    if (initialMessages.isNotEmpty()) {
-      Log.w(TAG, "llama.cpp session restore currently resets native context; UI history is preserved.")
+      try {
+        val turns = initialMessages.map { message ->
+          ChatTurn(
+            role = if (message.role == Role.USER) ChatRole.USER else ChatRole.ASSISTANT,
+            text = message.contents.toString(),
+          )
+        }
+        val reserveTokens =
+          model.getIntConfigValue(key = ConfigKeys.MAX_TOKENS, defaultValue = DEFAULT_MAX_TOKEN)
+        instance.omittedRestoreTurns =
+          instance.engine.restoreConversation(
+            systemInstruction?.toString().orEmpty(), turns, reserveTokens
+          )
+        instance.systemPrompt = systemInstruction?.toString().orEmpty()
+        instance.turns = turns.drop(instance.omittedRestoreTurns)
+        instance.restoreFailed = false
+      } catch (e: Exception) {
+        instance.restoreFailed = true
+        throw e
+      }
     }
   }
 
@@ -121,7 +164,6 @@ object LlamaCppModelHelper : LlmModelHelper {
       onDone()
       return
     }
-
     runBlocking(Dispatchers.IO) {
       instance.generationJob?.cancelAndJoin()
       instance.generationJob = null
@@ -157,6 +199,10 @@ object LlamaCppModelHelper : LlmModelHelper {
       onError("llama.cpp model is not initialized.")
       return
     }
+    if (instance.restoreFailed) {
+      onError("Saved GGUF chat context could not be restored. Retry the chat or start a new one.")
+      return
+    }
     if (images.isNotEmpty() || audioClips.isNotEmpty()) {
       onError("The llama.cpp GGUF backend currently supports text input only.")
       return
@@ -170,17 +216,34 @@ object LlamaCppModelHelper : LlmModelHelper {
     instance.generationJob?.cancel()
     val maxTokens =
       model.getIntConfigValue(key = ConfigKeys.MAX_TOKENS, defaultValue = DEFAULT_MAX_TOKEN)
+    val sampling =
+      SamplingSettings(
+        topK = model.getIntConfigValue(ConfigKeys.TOPK, DEFAULT_TOPK),
+        topP = model.getFloatConfigValue(ConfigKeys.TOPP, DEFAULT_TOPP),
+        temperature = model.getFloatConfigValue(ConfigKeys.TEMPERATURE, DEFAULT_TEMPERATURE),
+      )
 
     instance.generationJob =
       instance.scope.launch {
         try {
+          // Rebuild from complete saved turns before each request. This also recovers cleanly
+          // after a cancelled or partially generated native response.
+          instance.omittedRestoreTurns =
+            instance.engine.restoreConversation(instance.systemPrompt, instance.turns, maxTokens)
+          instance.turns = instance.turns.drop(instance.omittedRestoreTurns)
+          instance.engine.setSampling(sampling)
+          val response = StringBuilder()
           instance.engine.sendUserPrompt(input, maxTokens).collect { token ->
+            response.append(token)
             resultListener(token, false, null)
           }
+          instance.turns = instance.turns + ChatTurn(ChatRole.USER, input) +
+            ChatTurn(ChatRole.ASSISTANT, response.toString())
           resultListener("", true, null)
         } catch (e: CancellationException) {
           resultListener("", true, null)
         } catch (e: Exception) {
+          instance.restoreFailed = true
           Log.e(TAG, "llama.cpp inference failed", e)
           onError("Error: ${e.message ?: "llama.cpp inference failed"}")
         }
