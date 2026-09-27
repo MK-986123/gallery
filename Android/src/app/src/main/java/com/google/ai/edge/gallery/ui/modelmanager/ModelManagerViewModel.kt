@@ -1258,7 +1258,14 @@ constructor(
           var version = BuildConfig.VERSION_NAME.replace(".", "_")
           val url = getAllowlistUrl(version)
           Log.d(TAG, "Loading model allowlist from internet. Url: $url")
-          val data = getJsonResponse<ModelAllowlist>(url = url)
+          var data = getJsonResponse<ModelAllowlist>(url = url)
+          // The version is bumped before its allowlist is published, so use the previous one.
+          val previousVersion = getPreviousAllowlistVersion(version)
+          if (data == null && previousVersion != null) {
+            val previousUrl = getAllowlistUrl(previousVersion)
+            Log.w(TAG, "Loading previous model allowlist from internet. Url: $previousUrl")
+            data = getJsonResponse<ModelAllowlist>(url = previousUrl)
+          }
           modelAllowlist = data?.jsonObj
 
           if (modelAllowlist == null) {
@@ -1826,6 +1833,14 @@ constructor(
 
 private fun getAllowlistUrl(version: String): String {
   return "$ALLOWLIST_BASE_URL/${version}.json"
+}
+
+/** Returns the allowlist version before [version] ("1_0_19" for "1_0_20"), or null if none. */
+internal fun getPreviousAllowlistVersion(version: String): String? {
+  val parts = version.split("_")
+  val patch = parts.last().toIntOrNull() ?: return null
+  if (patch <= 0) return null
+  return (parts.dropLast(1) + (patch - 1).toString()).joinToString("_")
 }
 
 /**
