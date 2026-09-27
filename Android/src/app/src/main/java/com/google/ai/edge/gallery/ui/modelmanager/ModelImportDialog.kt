@@ -343,58 +343,63 @@ private fun importModel(
   onProgress: (Float) -> Unit,
   onError: (String) -> Unit,
 ) {
-  // TODO: handle error.
   coroutineScope.launch(Dispatchers.IO) {
-    // If it's a model from the web, we don't need to copy the file over.
-    if (isHttpOrHttps(uri)) {
-      Log.d(TAG, "importing web model from $uri. File name: $fileName. File size: $fileSize")
-      // Simulate a quick progress animation to show the user it's being added
-      // for (i in 1..10) {
-      //   kotlinx.coroutines.delay(50)
-      //   onProgress(i.toFloat() / 10f)
-      // }
-      Log.d(TAG, "import done for web model")
-      withContext(Dispatchers.Main) { onDone() }
-      return@launch
-    }
-
-    // Get the last component of the uri path as the imported file name.
-    val decodedUri = URLDecoder.decode(uri.toString(), StandardCharsets.UTF_8.name())
-    Log.d(TAG, "importing model from $decodedUri. File name: $fileName. File size: $fileSize")
-
-    val modelsDir = getModelStorageDir(context)
-
-    // Create <models_dir>/imports if not exist.
-    val importsDir = File(modelsDir, IMPORTS_DIR)
-    if (!importsDir.exists()) {
-      importsDir.mkdirs()
-    }
-
-    // Import by copying the file over.
-    val outputFile = File(modelsDir, "$IMPORTS_DIR/$fileName")
-    val outputStream = FileOutputStream(outputFile)
-    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-    var bytesRead: Int
-    var lastSetProgressTs: Long = 0
-    var importedBytes = 0L
-    val inputStream = context.contentResolver.openInputStream(uri)
+    var inputStream: java.io.InputStream? = null
+    var outputStream: FileOutputStream? = null
     try {
-      if (inputStream != null) {
-        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-          ensureActive()
-          outputStream.write(buffer, 0, bytesRead)
-          importedBytes += bytesRead
+      // If it's a model from the web, we don't need to copy the file over.
+      if (isHttpOrHttps(uri)) {
+        Log.d(TAG, "importing web model from $uri. File name: $fileName. File size: $fileSize")
+        Log.d(TAG, "import done for web model")
+        withContext(Dispatchers.Main) { onDone() }
+        return@launch
+      }
 
-          // Report progress every 200 ms.
-          val curTs = System.currentTimeMillis()
-          if (curTs - lastSetProgressTs > 200) {
-            Log.d(TAG, "importing progress: $importedBytes, $fileSize")
-            lastSetProgressTs = curTs
-            if (fileSize != 0L) {
-              onProgress(importedBytes.toFloat() / fileSize.toFloat())
-            }
+      // Get the last component of the uri path as the imported file name.
+      val decodedUri = URLDecoder.decode(uri.toString(), StandardCharsets.UTF_8.name())
+      Log.d(TAG, "importing model from $decodedUri. File name: $fileName. File size: $fileSize")
+
+      val modelsDir = getModelStorageDir(context)
+
+      // Create <models_dir>/imports if not exist.
+      val importsDir = File(modelsDir, IMPORTS_DIR)
+      if (!importsDir.exists()) {
+        importsDir.mkdirs()
+      }
+
+      // Import by copying the file over.
+      val outputFile = File(modelsDir, "$IMPORTS_DIR/$fileName")
+      inputStream = context.contentResolver.openInputStream(uri)
+      if (inputStream == null) {
+        throw java.io.IOException("Unable to open input stream for URI: $uri")
+      }
+      outputStream = FileOutputStream(outputFile)
+
+      val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+      var bytesRead: Int
+      var lastSetProgressTs: Long = 0
+      var importedBytes = 0L
+
+      while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+        ensureActive()
+        outputStream.write(buffer, 0, bytesRead)
+        importedBytes += bytesRead
+
+        // Report progress every 200 ms.
+        val curTs = System.currentTimeMillis()
+        if (curTs - lastSetProgressTs > 200) {
+          Log.d(TAG, "importing progress: $importedBytes, $fileSize")
+          lastSetProgressTs = curTs
+          if (fileSize != 0L) {
+            onProgress(importedBytes.toFloat() / fileSize.toFloat())
           }
         }
+      }
+
+      Log.d(TAG, "import done")
+      withContext(Dispatchers.Main) {
+        onProgress(1f)
+        onDone()
       }
     } catch (e: CancellationException) {
       throw e
@@ -403,15 +408,17 @@ private fun importModel(
       withContext(Dispatchers.Main) {
         onError(e.message ?: context.getString(R.string.failed_to_import))
       }
-      return@launch
     } finally {
-      inputStream?.close()
-      outputStream.close()
-    }
-    Log.d(TAG, "import done")
-    withContext(Dispatchers.Main) {
-      onProgress(1f)
-      onDone()
+      try {
+        inputStream?.close()
+      } catch (e: Exception) {
+        Log.w(TAG, "Failed to close input stream", e)
+      }
+      try {
+        outputStream?.close()
+      } catch (e: Exception) {
+        Log.w(TAG, "Failed to close output stream", e)
+      }
     }
   }
 }
