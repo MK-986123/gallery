@@ -651,6 +651,10 @@
   <string name="cd_zoom_in" translatable="true" description="Accessibility custom action label to zoom into an image. [CHAR_LIMIT=20]">Zoom in</string>
   <!-- Action label spoken to zoom out of an image. -->
   <string name="cd_zoom_out" translatable="true" description="Accessibility custom action label to zoom out of an image. [CHAR_LIMIT=20]">Zoom out</string>
+  <!-- Content description spoken when hiding password visibility in password field. -->
+  <string name="cd_hide_password" translatable="true" description="Content description spoken when hiding password visibility in password field. [CHAR_LIMIT=20]">Hide password</string>
+  <!-- Content description spoken when showing password visibility in password field. -->
+  <string name="cd_show_password" translatable="true" description="Content description spoken when showing password visibility in password field. [CHAR_LIMIT=20]">Show password</string>
 
 
   <!-- Content description for scrapbook -->
