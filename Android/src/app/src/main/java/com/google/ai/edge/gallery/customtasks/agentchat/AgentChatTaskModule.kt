@@ -128,6 +128,7 @@ constructor(
   private val skillsProvider: SkillsProvider,
   private val agentTools: AgentTools,
   @AgentChatExecutor private val executor: AgentRuntimeExecutor,
+  private val promptExpander: PromptExpander,
 ) : CustomTask {
   override val task: Task by lazy {
     Task(
@@ -168,9 +169,8 @@ constructor(
       val baseSystemPrompt =
         getEffectiveBaseSystemPrompt(initialSystemPrompt, toolsPrompt.isNotEmpty())
 
-      // TODO: inject prompt expander as a dependency.
       val finalSystemPrompt =
-        PromptExpander()
+        promptExpander
           .formatSystemInstructions(
             template = baseSystemPrompt,
             substitutions =
@@ -249,8 +249,9 @@ internal object AgentChatTaskModule {
     skillManager: SkillManager,
     agentTools: AgentTools,
     @AgentChatExecutor executor: AgentRuntimeExecutor,
+    promptExpander: PromptExpander,
   ): CustomTask {
-    return AgentChatTask(context, skillManager, agentTools, executor)
+    return AgentChatTask(context, skillManager, agentTools, executor, promptExpander)
   }
 
   @Provides
