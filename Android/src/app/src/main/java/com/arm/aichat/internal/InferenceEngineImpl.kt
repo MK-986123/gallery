@@ -79,40 +79,37 @@ internal class InferenceEngineImpl private constructor(
     /**
      * JNI methods
      * @see ai_chat.cpp
+     *
+     * Model loading, prompt processing, and token generation run for seconds; @FastNative would
+     * keep the garbage collector waiting on this thread for that whole time. Text crosses as UTF-8
+     * bytes because JNI's modified UTF-8 cannot carry characters such as emoji to the tokenizer.
      */
-    @FastNative
-    private external fun init(nativeLibDir: String)
+    // Returns the number of ggml backend devices available after loading backends.
+    private external fun init(nativeLibDir: String): Int
 
-    @FastNative
     private external fun load(modelPath: String): Int
 
-    @FastNative
     private external fun prepare(): Int
 
     @FastNative
     private external fun systemInfo(): String
 
-    @FastNative
     private external fun benchModel(pp: Int, tg: Int, pl: Int, nr: Int): String
 
-    @FastNative
-    private external fun processSystemPrompt(systemPrompt: String): Int
+    private external fun processSystemPrompt(systemPrompt: ByteArray): Int
 
-    private external fun replayTurns(roles: Array<String>, texts: Array<String>, reserveTokens: Int): Int
+    private external fun replayTurns(roles: Array<String>, texts: Array<ByteArray>, reserveTokens: Int): Int
 
     @FastNative
     private external fun configureSampler(topK: Int, topP: Float, temperature: Float): Int
 
-    @FastNative
-    private external fun processUserPrompt(userPrompt: String, predictLength: Int): Int
+    private external fun processUserPrompt(userPrompt: ByteArray, predictLength: Int): Int
 
-    @FastNative
-    private external fun generateNextToken(): String?
+    /** Returns UTF-8 bytes for the next complete characters, an empty array, or null at the end. */
+    private external fun generateNextToken(): ByteArray?
 
-    @FastNative
     private external fun unload()
 
-    @FastNative
     private external fun shutdown()
 
     private val _state =
@@ -122,6 +119,9 @@ internal class InferenceEngineImpl private constructor(
     private var _readyForSystemPrompt = false
     @Volatile
     private var _cancelGeneration = false
+    /** False when the native library or its CPU backend could not be loaded. */
+    @Volatile
+    private var runtimeReady = false
 
     /**
      * Single-threaded coroutine dispatcher & scope for LLama asynchronous operations
@@ -139,7 +139,8 @@ internal class InferenceEngineImpl private constructor(
                 _state.value = InferenceEngine.State.Initializing
                 Log.i(TAG, "Loading native library...")
                 System.loadLibrary("ai-chat")
-                init(nativeLibDir)
+                check(init(nativeLibDir) > 0) { "No llama.cpp CPU backend found in $nativeLibDir" }
+                runtimeReady = true
                 _state.value = InferenceEngine.State.Initialized
                 Log.i(TAG, "Native library loaded! System info: \n${systemInfo()}")
 
@@ -175,6 +176,7 @@ internal class InferenceEngineImpl private constructor(
                     if (it != 0) throw IOException("Invalid or unsupported GGUF model")
                 }
                 prepare().let {
+                    if (it == 3) throw IOException("This GGUF model's chat template is not supported")
                     if (it != 0) throw IOException("Failed to prepare resources")
                 }
                 Log.i(TAG, "Model loaded!")
@@ -204,7 +206,7 @@ internal class InferenceEngineImpl private constructor(
             Log.i(TAG, "Sending system prompt...")
             _readyForSystemPrompt = false
             _state.value = InferenceEngine.State.ProcessingSystemPrompt
-            processSystemPrompt(prompt).let { result ->
+            processSystemPrompt(prompt.toByteArray(Charsets.UTF_8)).let { result ->
                 if (result != 0) {
                     RuntimeException("Failed to process system prompt: $result").also {
                         _state.value = InferenceEngine.State.Error(it)
@@ -223,18 +225,19 @@ internal class InferenceEngineImpl private constructor(
     ): Int = withContext(llamaDispatcher) {
         check(_state.value is InferenceEngine.State.ModelReady) { "GGUF model is not ready" }
         _state.value = InferenceEngine.State.ProcessingSystemPrompt
+        val systemPromptBytes = systemPrompt.toByteArray(Charsets.UTF_8)
         try {
-            check(processSystemPrompt(systemPrompt) == 0) { "Failed to reset GGUF context" }
+            check(processSystemPrompt(systemPromptBytes) == 0) { "Failed to reset GGUF context" }
             val omitted = replayTurns(
                 turns.map { it.role.nativeName }.toTypedArray(),
-                turns.map { it.text }.toTypedArray(),
+                turns.map { it.text.toByteArray(Charsets.UTF_8) }.toTypedArray(),
                 reserveTokens,
             )
             check(omitted >= 0) { "Failed to restore GGUF chat context" }
             omitted
         } catch (e: Exception) {
             // Leave a clean system-only context so a subsequent restore can be retried.
-            runCatching { processSystemPrompt(systemPrompt) }
+            runCatching { processSystemPrompt(systemPromptBytes) }
             throw e
         } finally {
             _state.value = InferenceEngine.State.ModelReady
@@ -267,7 +270,7 @@ internal class InferenceEngineImpl private constructor(
             _readyForSystemPrompt = false
             _state.value = InferenceEngine.State.ProcessingUserPrompt
 
-            processUserPrompt(message, predictLength).let { result ->
+            processUserPrompt(message.toByteArray(Charsets.UTF_8), predictLength).let { result ->
                 if (result != 0) {
                     throw IOException(
                         if (result == 1) "GGUF context is full. Shorten the prompt or start a new chat."
@@ -280,7 +283,7 @@ internal class InferenceEngineImpl private constructor(
             _state.value = InferenceEngine.State.Generating
             while (!_cancelGeneration) {
                 generateNextToken()?.let { utf8token ->
-                    if (utf8token.isNotEmpty()) emit(utf8token)
+                    if (utf8token.isNotEmpty()) emit(String(utf8token, Charsets.UTF_8))
                 } ?: break
             }
             if (_cancelGeneration) {
@@ -295,7 +298,9 @@ internal class InferenceEngineImpl private constructor(
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error during generation!", e)
-            _state.value = InferenceEngine.State.Error(e)
+            // The model stays loaded and every request rebuilds its context, so a rejected or
+            // failed prompt must not block the next one.
+            _state.value = InferenceEngine.State.ModelReady
             throw e
         }
     }.flowOn(llamaDispatcher)
@@ -336,6 +341,11 @@ internal class InferenceEngineImpl private constructor(
                 }
 
                 is InferenceEngine.State.Error -> {
+                    // Without the native runtime there is nothing to release, and calling into it
+                    // would throw UnsatisfiedLinkError.
+                    if (!runtimeReady) {
+                        throw IllegalStateException("GGUF runtime unavailable", state.exception)
+                    }
                     Log.i(TAG, "Releasing GGUF resources after an error...")
                     unload()
                     _state.value = InferenceEngine.State.Initialized

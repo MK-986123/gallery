@@ -43,8 +43,12 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 private const val TAG = "AGLlamaCppModelHelper"
+private const val MODEL_REPLACED_ERROR =
+  "Another GGUF model was loaded after this one. Select this model again to reload it."
 
 private data class LlamaCppModelInstance(
   val engine: InferenceEngine,
@@ -59,6 +63,11 @@ private data class LlamaCppModelInstance(
 )
 
 object LlamaCppModelHelper : LlmModelHelper {
+  // The native engine holds one model at a time. Loading and releasing are serialized so that
+  // cleaning up a previous model never unloads the model that replaced it.
+  private val engineLock = Mutex()
+  @Volatile private var loadedInstance: LlamaCppModelInstance? = null
+
   fun takeOmittedRestoreTurns(model: Model): Int {
     val instance = model.instance as? LlamaCppModelInstance ?: return 0
     return instance.omittedRestoreTurns.also { instance.omittedRestoreTurns = 0 }
@@ -80,37 +89,42 @@ object LlamaCppModelHelper : LlmModelHelper {
       onDone("GGUF inference requires an arm64 Android device.")
       return
     }
-    if (model.instance != null) {
+    val existing = model.instance as? LlamaCppModelInstance
+    if (existing != null && existing === loadedInstance) {
       model.markInitialized()
       onDone("")
       return
     }
+    // An instance whose model was replaced in the engine cannot be reused; load it again.
+    existing?.scope?.cancel()
 
     model.markInitializationStarted()
     val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     scope.launch {
       try {
         val engine = AiChat.getInferenceEngine(context)
-        val state =
-          engine.state.first {
-            it is InferenceEngine.State.Initialized ||
-              it is InferenceEngine.State.ModelReady ||
-              it is InferenceEngine.State.Error
+        val systemPrompt = systemInstruction?.toString().orEmpty()
+        val instance =
+          engineLock.withLock {
+            val state =
+              engine.state.first {
+                it is InferenceEngine.State.Initialized ||
+                  it is InferenceEngine.State.ModelReady ||
+                  it is InferenceEngine.State.Error
+              }
+
+            loadedInstance = null
+            if (state is InferenceEngine.State.Error || state is InferenceEngine.State.ModelReady) {
+              engine.cleanUp()
+            }
+
+            engine.loadModel(model.getPath(context))
+            engine.setSystemPrompt(systemPrompt)
+            LlamaCppModelInstance(engine = engine, scope = scope, systemPrompt = systemPrompt)
+              .also { loadedInstance = it }
           }
 
-        if (state is InferenceEngine.State.Error || state is InferenceEngine.State.ModelReady) {
-          engine.cleanUp()
-        }
-
-        engine.loadModel(model.getPath(context))
-        engine.setSystemPrompt(systemInstruction?.toString().orEmpty())
-
-        model.markInitialized(
-          LlamaCppModelInstance(
-            engine = engine, scope = scope,
-            systemPrompt = systemInstruction?.toString().orEmpty(),
-          )
-        )
+        model.markInitialized(instance)
         onDone("")
       } catch (e: Exception) {
         Log.e(TAG, "Failed to initialize llama.cpp model '${model.name}'", e)
@@ -135,6 +149,7 @@ object LlamaCppModelHelper : LlmModelHelper {
       instance.generationJob?.cancelAndJoin()
       instance.generationJob = null
       try {
+        check(instance === loadedInstance) { MODEL_REPLACED_ERROR }
         val turns = initialMessages.map { message ->
           ChatTurn(
             role = if (message.role == Role.USER) ChatRole.USER else ChatRole.ASSISTANT,
@@ -167,12 +182,18 @@ object LlamaCppModelHelper : LlmModelHelper {
     runBlocking(Dispatchers.IO) {
       instance.generationJob?.cancelAndJoin()
       instance.generationJob = null
-      runCatching {
-        val state = instance.engine.state.value
-        if (state.isModelLoaded || state is InferenceEngine.State.Error) {
-          instance.engine.cleanUp()
+      engineLock.withLock {
+        // Leave the engine alone if another model has replaced this one since it loaded.
+        if (loadedInstance === instance) {
+          loadedInstance = null
+          runCatching {
+            val state = instance.engine.state.value
+            if (state.isModelLoaded || state is InferenceEngine.State.Error) {
+              instance.engine.cleanUp()
+            }
+          }.onFailure { Log.w(TAG, "Failed to clean up llama.cpp model", it) }
         }
-      }.onFailure { Log.w(TAG, "Failed to clean up llama.cpp model", it) }
+      }
     }
 
     instance.cleanUpListener?.invoke()
@@ -199,6 +220,10 @@ object LlamaCppModelHelper : LlmModelHelper {
       onError("llama.cpp model is not initialized.")
       return
     }
+    if (instance !== loadedInstance) {
+      onError(MODEL_REPLACED_ERROR)
+      return
+    }
     if (instance.restoreFailed) {
       onError("Saved GGUF chat context could not be restored. Retry the chat or start a new one.")
       return
@@ -213,7 +238,8 @@ object LlamaCppModelHelper : LlmModelHelper {
     }
 
     instance.cleanUpListener = cleanUpListener
-    instance.generationJob?.cancel()
+    val previousJob = instance.generationJob
+    previousJob?.cancel()
     val maxTokens =
       model.getIntConfigValue(key = ConfigKeys.MAX_TOKENS, defaultValue = DEFAULT_MAX_TOKEN)
     val sampling =
@@ -226,6 +252,8 @@ object LlamaCppModelHelper : LlmModelHelper {
     instance.generationJob =
       instance.scope.launch {
         try {
+          // A cancelled request holds the engine until its current native call returns.
+          previousJob?.join()
           // Rebuild from complete saved turns before each request. This also recovers cleanly
           // after a cancelled or partially generated native response.
           instance.omittedRestoreTurns =
@@ -243,7 +271,8 @@ object LlamaCppModelHelper : LlmModelHelper {
         } catch (e: CancellationException) {
           resultListener("", true, null)
         } catch (e: Exception) {
-          instance.restoreFailed = true
+          // Saved turns only change after a complete reply, so the next request can rebuild
+          // from them; a failed request must not lock the chat.
           Log.e(TAG, "llama.cpp inference failed", e)
           onError("Error: ${e.message ?: "llama.cpp inference failed"}")
         }
