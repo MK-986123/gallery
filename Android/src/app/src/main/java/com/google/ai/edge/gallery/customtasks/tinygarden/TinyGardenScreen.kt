@@ -513,7 +513,7 @@ fun MainUi(
                 settings.apply {
                   javaScriptEnabled = true
                   domStorageEnabled = true
-                  allowFileAccess = true
+                  allowFileAccess = false
                   // Needed to play the audio in game without user interaction.
                   mediaPlaybackRequiresUserGesture = false
                 }
