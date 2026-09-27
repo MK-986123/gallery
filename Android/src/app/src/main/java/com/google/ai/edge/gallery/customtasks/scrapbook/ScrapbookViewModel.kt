@@ -524,11 +524,9 @@ constructor(
       dataStoreRepository.setCutouts(newCutoutInfos.map { it.cutout })
 
       // Delete cutout items.
-      for (cutoutItem in _uiState.value.cutoutCollageItems) {
-        if (cutoutIdsToDelete.contains(cutoutItem.cutoutInfo.cutout.id)) {
-          deleteCutoutCollageItem(itemId = cutoutItem.itemId)
-        }
-      }
+      _uiState.value.cutoutCollageItems
+        .filter { cutoutIdsToDelete.contains(it.cutoutInfo.cutout.id) }
+        .forEach { deleteCutoutCollageItem(itemId = it.itemId) }
 
       // Delete files and recycle bitmaps.
       for (cutoutInfo in cutoutInfosToDelete) {
