@@ -14,7 +14,9 @@ endif()
 
 set(GGML_SYSTEM_ARCH "ARM")
 set(GGML_CPU_KLEIDIAI ON CACHE BOOL "" FORCE)
-set(GGML_OPENMP ON CACHE BOOL "" FORCE)
+# OpenMP would add a runtime dependency on the NDK's libomp, which the Gradle build does not
+# package (see llama.cpp docs/android.md); ggml's own thread pool is used instead.
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 
 include(FetchContent)
 FetchContent_Declare(

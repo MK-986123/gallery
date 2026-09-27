@@ -31,7 +31,7 @@ plugins {
 android {
   namespace = "com.google.ai.edge.gallery"
   compileSdk { this.version = release(37) { minorApiLevel = 0 } }
-  ndkVersion = "29.0.13113456"
+  ndkVersion = "29.0.14206865"
 
   defaultConfig {
     applicationId = "com.google.aiedge.gallery"
@@ -81,6 +81,11 @@ android {
       path("src/main/cpp/CMakeLists.txt")
       version = "3.31.6"
     }
+  }
+  packaging {
+    // llama.cpp finds its CPU backend variants by listing nativeLibraryDir, which stays empty
+    // unless native libraries are extracted at install time.
+    jniLibs { useLegacyPackaging = true }
   }
 
   compileOptions {
