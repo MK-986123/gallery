@@ -47,6 +47,7 @@
   <string name="benchmark_results" translatable="true" description="Title of the screen that displays benchmark results. [CHAR_LIMIT=29]">Benchmark results</string>
   <string name="benchmark_no_results" translatable="true" description="Message shown when there are no benchmark results to display. [CHAR_LIMIT=34]">No benchmark results</string>
   <string name="benchmark_tokens_limit_message" translatable="true" description="Warning message explaining token limits for LLM benchmarking. [CHAR_LIMIT=140]">Ensure that the sum of prefill and decode tokens remains under the model\'s maximum token limit (%1$d vs %2$d)</string>
+  <string name="benchmark_error_title" translatable="true" description="Title of error dialog when benchmark fails. [CHAR_LIMIT=30]">Benchmark failed</string>
   <string name="best_overall" translatable="true" description="Badge label indicating a model is the best overall choice. [CHAR_LIMIT=20]">Best overall</string>
   <string name="model_list_experimental_label" translatable="true" description="Label indicating a model is experimental. [CHAR_LIMIT=20]">EXPERIMENTAL</string>
   <string name="cancel" translatable="true" description="Common button label to cancel the current action or close a dialog. [CHAR_LIMIT=9]">Cancel</string>
