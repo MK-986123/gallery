@@ -30,7 +30,7 @@ plugins {
 
 android {
   namespace = "com.google.ai.edge.gallery"
-  compileSdk { this.version = release(37) { minorApiLevel = 0 } }
+  compileSdk = 36
 
   defaultConfig {
     applicationId = "com.google.aiedge.gallery"
@@ -49,6 +49,10 @@ android {
     buildConfigField("String", "FEEDBACK_API_KEY", "\"\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+  }
+
+  testOptions {
+    unitTests.isReturnDefaultValues = true
   }
 
   buildTypes {
