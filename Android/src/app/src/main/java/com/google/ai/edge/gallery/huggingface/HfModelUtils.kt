@@ -117,8 +117,16 @@ fun isLiteRtLmFileName(filename: String): Boolean {
 fun isGgufFileName(filename: String): Boolean = filename.endsWith(".gguf", ignoreCase = true)
 
 /** The extension is only a candidate; local files must start with the GGUF container signature. */
-fun hasGgufHeader(input: InputStream): Boolean =
-  input.readNBytes(4).contentEquals("GGUF".toByteArray(StandardCharsets.US_ASCII))
+fun hasGgufHeader(input: InputStream): Boolean {
+  val header = ByteArray(4)
+  var read = 0
+  while (read < header.size) {
+    val count = input.read(header, read, header.size - read)
+    if (count <= 0) return false
+    read += count
+  }
+  return header.contentEquals("GGUF".toByteArray(StandardCharsets.US_ASCII))
+}
 
 /** Checks if a filename can be routed to one of Gallery's local LLM runtimes. */
 fun isSupportedModelFileName(filename: String): Boolean =

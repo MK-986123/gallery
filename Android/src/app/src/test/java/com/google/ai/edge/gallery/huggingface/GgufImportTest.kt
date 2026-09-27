@@ -42,6 +42,12 @@ class GgufImportTest {
   @Test
   fun distinguishesGgufHeaderAndDeviceAbi() {
     assertTrue(hasGgufHeader(ByteArrayInputStream("GGUFpayload".toByteArray())))
+    val chunked =
+      object : ByteArrayInputStream("GGUFpayload".toByteArray()) {
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+          super.read(buffer, offset, minOf(length, 1))
+      }
+    assertTrue(hasGgufHeader(chunked))
     assertFalse(hasGgufHeader(ByteArrayInputStream("not-a-gguf".toByteArray())))
     assertFalse(hasGgufHeader(ByteArrayInputStream(byteArrayOf(0x47, 0x47))))
 
