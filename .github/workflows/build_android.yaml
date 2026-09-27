@@ -33,5 +33,11 @@
               "cmake;3.31.6"
         - name: Test and build debug and release APKs
           run: ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease --no-daemon
-  
+        - name: Upload APKs
+          uses: actions/upload-artifact@v4
+          with:
+            name: gallery-apks
+            path: Android/src/app/build/outputs/apk/**/*.apk
+            if-no-files-found: error
+
   
