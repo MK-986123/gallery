@@ -30,6 +30,10 @@ plugins {
 
 android {
   namespace = "com.google.ai.edge.gallery"
+
+  testOptions {
+    unitTests.isReturnDefaultValues = true
+  }
   compileSdk { this.version = release(37) { minorApiLevel = 0 } }
 
   defaultConfig {

@@ -172,10 +172,11 @@ open class Config(
     fun createLlmImportConfigs(
       accelerators: List<Accelerator> = DEFAULT_ACCELERATORS,
       isForTestOnly: Boolean = false,
+      modelType: String = "LLM",
     ): List<Config> {
       return buildList {
         add(LabelConfig(key = ConfigKeys.NAME))
-        add(LabelConfig(key = ConfigKeys.MODEL_TYPE))
+        add(LabelConfig(key = ConfigKeys.MODEL_TYPE, defaultValue = modelType))
         add(createMaxTokensSliderConfig(key = ConfigKeys.DEFAULT_MAX_TOKENS))
         add(createTopKSliderConfig(key = ConfigKeys.DEFAULT_TOPK))
         add(createTopPSliderConfig(key = ConfigKeys.DEFAULT_TOPP))
