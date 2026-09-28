@@ -479,8 +479,7 @@ class DefaultDownloadRepository(
 
     val builder =
       NotificationCompat.Builder(context, channelId)
-        // TODO: replace icon.
-        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setSmallIcon(R.mipmap.ic_launcher)
         .setContentTitle(title)
         .setContentText(text)
         .setPriority(NotificationCompat.PRIORITY_HIGH)
