@@ -23,6 +23,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import com.google.ai.edge.gallery.R
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
 import dagger.hilt.android.EntryPointAccessors
@@ -75,7 +76,7 @@ class NotificationReceiver : BroadcastReceiver() {
 
       val notificationBuilder =
         NotificationCompat.Builder(context, channelId)
-          .setSmallIcon(android.R.drawable.ic_dialog_info)
+          .setSmallIcon(R.mipmap.ic_launcher)
           .setContentTitle(title)
           .setContentText(message)
           .setAutoCancel(true)

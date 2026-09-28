@@ -24,6 +24,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.util.Log
+import com.google.ai.edge.gallery.R
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
@@ -401,7 +402,7 @@ class DownloadWorker(context: Context, params: WorkerParameters) :
       NotificationCompat.Builder(applicationContext, FOREGROUND_NOTIFICATION_CHANNEL_ID)
         .setContentTitle(title)
         .setContentText(content)
-        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setSmallIcon(R.mipmap.ic_launcher)
         .setOngoing(true) // Makes the notification non-dismissable
         .setProgress(100, progress, false) // Show progress
         .setContentIntent(pendingIntent)
