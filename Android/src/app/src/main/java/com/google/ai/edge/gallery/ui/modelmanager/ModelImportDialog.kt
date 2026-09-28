@@ -110,16 +110,18 @@ fun ModelImportDialog(
   onDone: (ImportedModel) -> Unit,
   defaultValues: Map<ConfigKey, Any> = emptyMap(),
   accessToken: String? = null,
+  modelType: String = "LLM",
 ) {
   val context = LocalContext.current
   val info = remember { getFileSizeAndDisplayNameFromUri(context = context, uri = uri) }
   var fileSize by remember { mutableLongStateOf(info.first) }
   val fileName by remember { mutableStateOf(ensureValidFileName(info.second)) }
   val importConfigs =
-    remember(uri) {
+    remember(uri, modelType) {
       Config.createLlmImportConfigs(
         accelerators = SUPPORTED_ACCELERATORS,
         isForTestOnly = ModelUtils.isImportedUrlForTestOnly(uri.toString()),
+        modelType = modelType,
       )
     }
 
@@ -150,14 +152,13 @@ fun ModelImportDialog(
     }
   }
 
-  val initialValues: Map<String, Any> = remember {
+  val initialValues: Map<String, Any> = remember(fileName, modelType, importConfigs, defaultValues) {
     mutableMapOf<String, Any>().apply {
       for (config in importConfigs) {
         put(config.key.label, config.defaultValue)
       }
       put(ConfigKeys.NAME.label, fileName)
-      // TODO: support other types.
-      put(ConfigKeys.MODEL_TYPE.label, "LLM")
+      put(ConfigKeys.MODEL_TYPE.label, modelType)
 
       for ((key, value) in defaultValues) {
         put(key.label, value)
