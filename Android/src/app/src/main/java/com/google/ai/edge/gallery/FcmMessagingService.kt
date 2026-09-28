@@ -29,10 +29,9 @@ import androidx.core.net.toUri
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
+/** Service for handling Firebase Cloud Messaging (FCM) notifications and token registration. */
 class GalleryFcmMessagingService : FirebaseMessagingService() {
   override fun onMessageReceived(remoteMessage: RemoteMessage) {
-    // TODO(developer): Handle FCM messages here.
-    // Not getting messages here? See why this may be: https://goo.gl/39bRNJ
     Log.d(TAG, "Full message: $remoteMessage")
     Log.d(TAG, "From: ${remoteMessage.from}")
 
@@ -55,10 +54,11 @@ class GalleryFcmMessagingService : FirebaseMessagingService() {
     } else if (data.isNotEmpty()) {
       handleNow()
     }
+  }
 
-    // Also if you intend on generating your own notificatisons as a result of a received FCM
-    // message, here is where that should be initiated. See sendNotification method below.
-
+  override fun onNewToken(token: String) {
+    super.onNewToken(token)
+    Log.d(TAG, "Refreshed FCM registration token: $token")
   }
 
   private fun handleNow() {
@@ -73,11 +73,13 @@ class GalleryFcmMessagingService : FirebaseMessagingService() {
   ) {
     val intent =
       if (!deeplink.isNullOrEmpty()) {
-        Intent(Intent.ACTION_VIEW, deeplink.toUri()).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
+        Intent(Intent.ACTION_VIEW, deeplink.toUri()).apply {
+          flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
       } else {
         Intent(this, MainActivity::class.java).apply { addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP) }
       }
-    val requestCode = 0
+    val requestCode = System.currentTimeMillis().toInt()
     val pendingIntent =
       PendingIntent.getActivity(
         this,
@@ -86,10 +88,9 @@ class GalleryFcmMessagingService : FirebaseMessagingService() {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
       )
 
-    val channelId = "gallery_high_priority_push_channel"
     val defaultSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
     val notificationBuilder =
-      NotificationCompat.Builder(this, channelId)
+      NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(R.mipmap.ic_launcher)
         .setContentTitle(title ?: getString(R.string.gallery_news_notification_title))
         .setContentText(messageBody)
@@ -102,19 +103,21 @@ class GalleryFcmMessagingService : FirebaseMessagingService() {
       try {
         val url = java.net.URL(imageUrl.toString())
         val connection = url.openConnection()
-        connection.connectTimeout = 5000
-        connection.readTimeout = 5000
-        val bitmap = android.graphics.BitmapFactory.decodeStream(connection.getInputStream())
-        if (bitmap != null) {
-          notificationBuilder.setLargeIcon(bitmap)
-          notificationBuilder.setStyle(
-            NotificationCompat.BigPictureStyle()
-              .bigPicture(bitmap)
-              .bigLargeIcon(null as android.graphics.Bitmap?)
-          )
+        connection.connectTimeout = CONNECT_TIMEOUT_MS
+        connection.readTimeout = READ_TIMEOUT_MS
+        connection.getInputStream().use { inputStream ->
+          val bitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
+          if (bitmap != null) {
+            notificationBuilder.setLargeIcon(bitmap)
+            notificationBuilder.setStyle(
+              NotificationCompat.BigPictureStyle()
+                .bigPicture(bitmap)
+                .bigLargeIcon(null as android.graphics.Bitmap?)
+            )
+          }
         }
       } catch (e: Exception) {
-        Log.w(TAG, "Failed to download image", e)
+        Log.w(TAG, "Failed to download image from $imageUrl", e)
       }
     }
 
@@ -124,18 +127,21 @@ class GalleryFcmMessagingService : FirebaseMessagingService() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       val channel =
         NotificationChannel(
-          channelId,
+          CHANNEL_ID,
           getString(R.string.gallery_news_notification_title),
           NotificationManager.IMPORTANCE_HIGH,
         )
       notificationManager.createNotificationChannel(channel)
     }
 
-    val notificationId = 0
+    val notificationId = (title.hashCode() xor messageBody.hashCode() xor System.currentTimeMillis().toInt())
     notificationManager.notify(notificationId, notificationBuilder.build())
   }
 
   companion object {
     private const val TAG = "AGFcmMessagingService"
+    private const val CHANNEL_ID = "gallery_high_priority_push_channel"
+    private const val CONNECT_TIMEOUT_MS = 5000
+    private const val READ_TIMEOUT_MS = 5000
   }
 }
