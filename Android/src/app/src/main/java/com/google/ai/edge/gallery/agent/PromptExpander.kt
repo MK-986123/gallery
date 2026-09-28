@@ -16,8 +16,10 @@
 
 package com.google.ai.edge.gallery.agent
 
+import javax.inject.Inject
+
 /** Utility class that assembles the full working context before passing it to the engine. */
-class PromptExpander {
+class PromptExpander @Inject constructor() {
   /**
    * Formats the system instruction template with key-value substitutions and returns the final
    * system instructions.
