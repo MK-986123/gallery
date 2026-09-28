@@ -51,6 +51,10 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
+  testOptions {
+    unitTests.isReturnDefaultValues = true
+  }
+
   buildTypes {
     release {
       isMinifyEnabled = false
@@ -120,6 +124,8 @@ dependencies {
   ksp("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.0")
   annotationProcessor("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.0")
   testImplementation(libs.junit)
+  testImplementation(libs.mockk)
+  testImplementation(libs.robolectric)
   androidTestImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.espresso.core)
   androidTestImplementation(platform(libs.androidx.compose.bom))
