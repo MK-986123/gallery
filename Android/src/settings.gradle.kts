@@ -23,6 +23,7 @@ pluginManagement {
         includeGroupByRegex("androidx.*")
       }
     }
+    maven("https://maven-central.storage-download.googleapis.com/maven2/")
     mavenCentral()
     gradlePluginPortal()
   }
@@ -40,6 +41,7 @@ dependencyResolutionManagement {
   repositories {
     //        mavenLocal()
     google()
+    maven("https://maven-central.storage-download.googleapis.com/maven2/")
     mavenCentral()
   }
 }
