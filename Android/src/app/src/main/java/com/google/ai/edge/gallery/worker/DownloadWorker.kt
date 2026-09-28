@@ -56,10 +56,17 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 
 private const val TAG = "AGDownloadWorker"
@@ -129,127 +136,189 @@ class DownloadWorker(context: Context, params: WorkerParameters) :
               UrlAndFileName(url = extraDataFileUrls[index], fileName = extraDataFileNames[index])
             )
           }
-          Log.d(TAG, "About to download: $allFiles")
+          Log.d(TAG, "About to download in parallel: $allFiles")
 
-          // Download them in sequence.
-          // TODO: maybe consider downloading them in parallel.
-          var downloadedBytes = 0L
+          val downloadedBytes = AtomicLong(0L)
+          val currentDeltaBytes = AtomicLong(0L)
+          val lastSetProgressTs = AtomicLong(0L)
           val bytesReadSizeBuffer: MutableList<Long> = mutableListOf()
           val bytesReadLatencyBuffer: MutableList<Long> = mutableListOf()
-          for (file in allFiles) {
-            val url = URL(file.url)
+          val progressMutex = Mutex()
 
-            val connection = url.openConnection() as HttpURLConnection
-            if (accessToken != null) {
-              Log.d(TAG, "Using access token: ${accessToken.subSequence(0, 10)}...")
-              connection.setRequestProperty("Authorization", "Bearer $accessToken")
-            }
-
-            // Prepare output file's dir.
-            val outputDir =
-              if (isModelImported) {
-                File(modelsDir, modelDir)
-              } else {
-                File(modelsDir, listOf(modelDir, version).joinToString(separator = File.separator))
-              }
-            if (!outputDir.exists()) {
-              outputDir.mkdirs()
-            }
-
-            // Read the tmp file and see if it is partially downloaded.
-            val outputTmpFile =
-              if (isModelImported) {
-                File(
-                  modelsDir,
-                  listOf(modelDir, "${file.fileName}.$TMP_FILE_EXT")
-                    .joinToString(separator = File.separator),
-                )
-              } else {
-                File(
-                  modelsDir,
-                  listOf(modelDir, version, "${file.fileName}.$TMP_FILE_EXT")
-                    .joinToString(separator = File.separator),
+          coroutineScope {
+            allFiles.map { file ->
+              async {
+                downloadAndProcessFile(
+                  file = file,
+                  accessToken = accessToken,
+                  isModelImported = isModelImported,
+                  version = version,
+                  modelDir = modelDir,
+                  modelName = modelName,
+                  fileName = fileName,
+                  isZip = isZip,
+                  unzippedDir = unzippedDir,
+                  totalBytes = totalBytes,
+                  downloadedBytes = downloadedBytes,
+                  currentDeltaBytes = currentDeltaBytes,
+                  lastSetProgressTs = lastSetProgressTs,
+                  bytesReadSizeBuffer = bytesReadSizeBuffer,
+                  bytesReadLatencyBuffer = bytesReadLatencyBuffer,
+                  progressMutex = progressMutex,
                 )
               }
-            val outputFileBytes = outputTmpFile.length()
-            if (outputFileBytes > 0) {
-              Log.d(
-                TAG,
-                "File '${outputTmpFile.name}' partial size: ${outputFileBytes}. Trying to resume download",
-              )
-              connection.setRequestProperty("Range", "bytes=${outputFileBytes}-")
-              // Force the server to send non-compressed data to make download resuming work.
-              connection.setRequestProperty("Accept-Encoding", "identity")
-            }
-            connection.connect()
-            Log.d(TAG, "response code: ${connection.responseCode}")
+            }.awaitAll()
+          }
 
-            if (
-              connection.responseCode == HttpURLConnection.HTTP_OK ||
-                connection.responseCode == HttpURLConnection.HTTP_PARTIAL
-            ) {
-              val contentRange = connection.getHeaderField("Content-Range")
+          Result.success()
+        } catch (e: Exception) {
+          if (e is CancellationException) {
+            throw e
+          }
+          Log.e(TAG, e.message, e)
+          Result.failure(
+            Data.Builder().putString(KEY_MODEL_DOWNLOAD_ERROR_MESSAGE, e.message).build()
+          )
+        }
+      }
+    }
+  }
 
-              if (contentRange != null) {
-                // Parse the Content-Range header
-                val rangeParts = contentRange.substringAfter("bytes ").split("/")
-                val byteRange = rangeParts[0].split("-")
-                val startByte = byteRange[0].toLong()
-                val endByte = byteRange[1].toLong()
+  private suspend fun downloadAndProcessFile(
+    file: UrlAndFileName,
+    accessToken: String?,
+    isModelImported: Boolean,
+    version: String,
+    modelDir: String,
+    modelName: String,
+    fileName: String?,
+    isZip: Boolean,
+    unzippedDir: String?,
+    totalBytes: Long,
+    downloadedBytes: AtomicLong,
+    currentDeltaBytes: AtomicLong,
+    lastSetProgressTs: AtomicLong,
+    bytesReadSizeBuffer: MutableList<Long>,
+    bytesReadLatencyBuffer: MutableList<Long>,
+    progressMutex: Mutex,
+  ) {
+    val url = URL(file.url)
 
-                Log.d(
-                  TAG,
-                  "Content-Range: $contentRange. Start bytes: ${startByte}, end bytes: $endByte",
-                )
+    val connection = url.openConnection() as HttpURLConnection
+    if (accessToken != null) {
+      Log.d(TAG, "Using access token: ${accessToken.subSequence(0, 10)}...")
+      connection.setRequestProperty("Authorization", "Bearer $accessToken")
+    }
 
-                downloadedBytes += startByte
-              } else {
-                Log.d(TAG, "Download starts from beginning.")
-              }
-            } else {
-              throw IOException("HTTP error code: ${connection.responseCode}")
-            }
+    // Prepare output file's dir.
+    val outputDir =
+      if (isModelImported) {
+        File(modelsDir, modelDir)
+      } else {
+        File(modelsDir, listOf(modelDir, version).joinToString(separator = File.separator))
+      }
+    if (!outputDir.exists()) {
+      outputDir.mkdirs()
+    }
 
-            val inputStream = connection.inputStream
-            val outputStream = FileOutputStream(outputTmpFile, true /* append */)
+    // Read the tmp file and see if it is partially downloaded.
+    val outputTmpFile =
+      if (isModelImported) {
+        File(
+          modelsDir,
+          listOf(modelDir, "${file.fileName}.$TMP_FILE_EXT")
+            .joinToString(separator = File.separator),
+        )
+      } else {
+        File(
+          modelsDir,
+          listOf(modelDir, version, "${file.fileName}.$TMP_FILE_EXT")
+            .joinToString(separator = File.separator),
+        )
+      }
+    val outputFileBytes = outputTmpFile.length()
+    if (outputFileBytes > 0) {
+      Log.d(
+        TAG,
+        "File '${outputTmpFile.name}' partial size: ${outputFileBytes}. Trying to resume download",
+      )
+      connection.setRequestProperty("Range", "bytes=${outputFileBytes}-")
+      // Force the server to send non-compressed data to make download resuming work.
+      connection.setRequestProperty("Accept-Encoding", "identity")
+    }
+    connection.connect()
+    Log.d(TAG, "response code: ${connection.responseCode}")
 
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            var bytesRead: Int
-            var lastSetProgressTs: Long = 0
-            var deltaBytes = 0L
-            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-              coroutineContext.ensureActive()
-              outputStream.write(buffer, 0, bytesRead)
-              downloadedBytes += bytesRead
-              deltaBytes += bytesRead
+    val isPartial = connection.responseCode == HttpURLConnection.HTTP_PARTIAL
+    if (
+      connection.responseCode == HttpURLConnection.HTTP_OK || isPartial
+    ) {
+      val contentRange = connection.getHeaderField("Content-Range")
 
-              // Report progress every 200 ms.
-              val curTs = System.currentTimeMillis()
-              if (curTs - lastSetProgressTs > 200) {
-                // Calculate download rate.
-                var bytesPerMs = 0f
-                if (lastSetProgressTs != 0L) {
-                  if (bytesReadSizeBuffer.size == 5) {
-                    bytesReadSizeBuffer.removeAt(0)
-                  }
-                  bytesReadSizeBuffer.add(deltaBytes)
-                  if (bytesReadLatencyBuffer.size == 5) {
-                    bytesReadLatencyBuffer.removeAt(0)
-                  }
-                  bytesReadLatencyBuffer.add(curTs - lastSetProgressTs)
-                  deltaBytes = 0L
-                  bytesPerMs = bytesReadSizeBuffer.sum().toFloat() / bytesReadLatencyBuffer.sum()
+      if (contentRange != null) {
+        // Parse the Content-Range header
+        val rangeParts = contentRange.substringAfter("bytes ").split("/")
+        val byteRange = rangeParts[0].split("-")
+        val startByte = byteRange[0].toLong()
+        val endByte = byteRange[1].toLong()
+
+        Log.d(
+          TAG,
+          "Content-Range: $contentRange. Start bytes: ${startByte}, end bytes: $endByte",
+        )
+
+        downloadedBytes.addAndGet(startByte)
+      } else {
+        Log.d(TAG, "Download starts from beginning.")
+      }
+    } else {
+      throw IOException("HTTP error code: ${connection.responseCode}")
+    }
+
+    val inputStream = connection.inputStream
+    val outputStream = FileOutputStream(outputTmpFile, isPartial /* append only if partial */)
+
+    try {
+      val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+      var bytesRead: Int
+      while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+        currentCoroutineContext().ensureActive()
+        outputStream.write(buffer, 0, bytesRead)
+        val currentDownloaded = downloadedBytes.addAndGet(bytesRead.toLong())
+        currentDeltaBytes.addAndGet(bytesRead.toLong())
+
+        // Report progress every 200 ms.
+        val curTs = System.currentTimeMillis()
+        if (curTs - lastSetProgressTs.get() > 200) {
+          if (progressMutex.tryLock()) {
+            try {
+              val now = System.currentTimeMillis()
+              val timeDiff = now - lastSetProgressTs.get()
+              if (timeDiff > 200) {
+                lastSetProgressTs.set(now)
+                val delta = currentDeltaBytes.getAndSet(0L)
+
+                if (bytesReadSizeBuffer.size == 5) {
+                  bytesReadSizeBuffer.removeAt(0)
                 }
+                bytesReadSizeBuffer.add(delta)
+                if (bytesReadLatencyBuffer.size == 5) {
+                  bytesReadLatencyBuffer.removeAt(0)
+                }
+                bytesReadLatencyBuffer.add(timeDiff)
 
-                // Calculate remaining seconds
+                val sumLatency = bytesReadLatencyBuffer.sum()
+                val bytesPerMs =
+                  if (sumLatency > 0) bytesReadSizeBuffer.sum().toFloat() / sumLatency else 0f
+
                 var remainingMs = 0f
                 if (bytesPerMs > 0f && totalBytes > 0L) {
-                  remainingMs = (totalBytes - downloadedBytes) / bytesPerMs
+                  remainingMs = (totalBytes - currentDownloaded) / bytesPerMs
                 }
 
                 setProgress(
                   Data.Builder()
-                    .putLong(KEY_MODEL_DOWNLOAD_RECEIVED_BYTES, downloadedBytes)
+                    .putLong(KEY_MODEL_DOWNLOAD_RECEIVED_BYTES, currentDownloaded)
                     .putLong(KEY_MODEL_DOWNLOAD_RATE, (bytesPerMs * 1000).toLong())
                     .putLong(KEY_MODEL_DOWNLOAD_REMAINING_MS, remainingMs.toLong())
                     .build()
@@ -257,112 +326,109 @@ class DownloadWorker(context: Context, params: WorkerParameters) :
                 setForeground(
                   createForegroundInfo(
                     progress =
-                      if (totalBytes > 0L) (downloadedBytes * 100 / totalBytes).toInt() else 0,
+                      if (totalBytes > 0L) (currentDownloaded * 100 / totalBytes).toInt().coerceAtMost(100)
+                      else 0,
                     modelName = modelName,
                   )
                 )
-                Log.d(TAG, "downloadedBytes: $downloadedBytes")
-                lastSetProgressTs = curTs
+                Log.d(TAG, "downloadedBytes: $currentDownloaded")
               }
-            }
-
-            outputStream.close()
-            inputStream.close()
-
-            // Rename the tmp file to the original file name by removing the tmp file ext.
-            val originalFilePath = outputTmpFile.absolutePath.replace(".$TMP_FILE_EXT", "")
-            val originalFile = File(originalFilePath)
-            if (originalFile.exists()) {
-              originalFile.delete()
-            }
-            outputTmpFile.renameTo(originalFile)
-            Log.d(TAG, "Download done")
-
-            // Unzip if the downloaded file is a zip.
-            val shouldUnzip =
-              (file.fileName == fileName && isZip) ||
-                file.fileName.endsWith(".zip", ignoreCase = true)
-            if (shouldUnzip && originalFile.exists()) {
-              setProgress(Data.Builder().putBoolean(KEY_MODEL_START_UNZIPPING, true).build())
-
-              // Prepare target dir.
-              val destDir =
-                if (file.fileName == fileName && !unzippedDir.isNullOrEmpty()) {
-                  File(outputDir, unzippedDir)
-                } else if (file.fileName != fileName) {
-                  val folderName = file.fileName.substringBeforeLast(".")
-                  var hasPrefix = false
-                  try {
-                    ZipInputStream(BufferedInputStream(FileInputStream(originalFile))).use {
-                      checkZipIn ->
-                      var checkEntry = checkZipIn.nextEntry
-                      while (checkEntry != null) {
-                        if (checkEntry.name.startsWith("$folderName/")) {
-                          hasPrefix = true
-                          break
-                        }
-                        checkEntry = checkZipIn.nextEntry
-                      }
-                    }
-                  } catch (e: Exception) {
-                    Log.w(TAG, "Failed to inspect zip entries for prefix: ${e.message}")
-                  }
-                  if (hasPrefix) outputDir else File(outputDir, folderName)
-                } else {
-                  outputDir
-                }
-              if (!destDir.exists()) {
-                destDir.mkdirs()
-              }
-
-              // Unzip.
-              val unzipBuffer = ByteArray(8192)
-              ZipInputStream(BufferedInputStream(FileInputStream(originalFile))).use { zipIn ->
-                var zipEntry: ZipEntry? = zipIn.nextEntry
-                while (zipEntry != null) {
-                  coroutineContext.ensureActive()
-                  val outFile = File(destDir, zipEntry.name)
-                  // Guard against Zip Slip.
-                  if (
-                    outFile.canonicalPath.startsWith(destDir.canonicalPath + File.separator) ||
-                      outFile.canonicalPath == destDir.canonicalPath
-                  ) {
-                    // Extract files.
-                    if (!zipEntry.isDirectory) {
-                      outFile.parentFile?.mkdirs()
-                      FileOutputStream(outFile).use { fos ->
-                        var len: Int
-                        while (zipIn.read(unzipBuffer).also { len = it } > 0) {
-                          coroutineContext.ensureActive()
-                          fos.write(unzipBuffer, 0, len)
-                        }
-                      }
-                    } else {
-                      outFile.mkdirs()
-                    }
-                  } else {
-                    throw SecurityException(
-                      "Zip entry is outside of the target dir: ${zipEntry.name}"
-                    )
-                  }
-
-                  zipIn.closeEntry()
-                  zipEntry = zipIn.nextEntry
-                }
-              }
-
-              // Delete the original zip file.
-              originalFile.delete()
+            } finally {
+              progressMutex.unlock()
             }
           }
-          Result.success()
-        } catch (e: IOException) {
-          Log.e(TAG, e.message, e)
-          Result.failure(
-            Data.Builder().putString(KEY_MODEL_DOWNLOAD_ERROR_MESSAGE, e.message).build()
-          )
         }
       }
+    } finally {
+      outputStream.close()
+      inputStream.close()
+      connection.disconnect()
+    }
+
+    // Rename the tmp file to the original file name by removing the tmp file ext.
+    val originalFilePath = outputTmpFile.absolutePath.replace(".$TMP_FILE_EXT", "")
+    val originalFile = File(originalFilePath)
+    if (originalFile.exists()) {
+      originalFile.delete()
+    }
+    outputTmpFile.renameTo(originalFile)
+    Log.d(TAG, "Download done")
+
+    // Unzip if the downloaded file is a zip.
+    val shouldUnzip =
+      (file.fileName == fileName && isZip) ||
+        file.fileName.endsWith(".zip", ignoreCase = true)
+    if (shouldUnzip && originalFile.exists()) {
+      setProgress(Data.Builder().putBoolean(KEY_MODEL_START_UNZIPPING, true).build())
+
+      // Prepare target dir.
+      val destDir =
+        if (file.fileName == fileName && !unzippedDir.isNullOrEmpty()) {
+          File(outputDir, unzippedDir)
+        } else if (file.fileName != fileName) {
+          val folderName = file.fileName.substringBeforeLast(".")
+          var hasPrefix = false
+          try {
+            ZipInputStream(BufferedInputStream(FileInputStream(originalFile))).use {
+              checkZipIn ->
+              var checkEntry = checkZipIn.nextEntry
+              while (checkEntry != null) {
+                if (checkEntry.name.startsWith("$folderName/")) {
+                  hasPrefix = true
+                  break
+                }
+                checkEntry = checkZipIn.nextEntry
+              }
+            }
+          } catch (e: Exception) {
+            Log.w(TAG, "Failed to inspect zip entries for prefix: ${e.message}")
+          }
+          if (hasPrefix) outputDir else File(outputDir, folderName)
+        } else {
+          outputDir
+        }
+      if (!destDir.exists()) {
+        destDir.mkdirs()
+      }
+
+      // Unzip.
+      val unzipBuffer = ByteArray(8192)
+      ZipInputStream(BufferedInputStream(FileInputStream(originalFile))).use { zipIn ->
+        var zipEntry: ZipEntry? = zipIn.nextEntry
+        while (zipEntry != null) {
+          currentCoroutineContext().ensureActive()
+          val outFile = File(destDir, zipEntry.name)
+          // Guard against Zip Slip.
+          if (
+            outFile.canonicalPath.startsWith(destDir.canonicalPath + File.separator) ||
+              outFile.canonicalPath == destDir.canonicalPath
+          ) {
+            // Extract files.
+            if (!zipEntry.isDirectory) {
+              outFile.parentFile?.mkdirs()
+              FileOutputStream(outFile).use { fos ->
+                var len: Int
+                while (zipIn.read(unzipBuffer).also { len = it } > 0) {
+                  currentCoroutineContext().ensureActive()
+                  fos.write(unzipBuffer, 0, len)
+                }
+              }
+            } else {
+              outFile.mkdirs()
+            }
+          } else {
+            throw SecurityException(
+              "Zip entry is outside of the target dir: ${zipEntry.name}"
+            )
+          }
+
+          zipIn.closeEntry()
+          zipEntry = zipIn.nextEntry
+        }
+      }
+
+      // Delete the original zip file.
+      originalFile.delete()
     }
   }
 
