@@ -73,6 +73,7 @@ data class BenchmarkUiState(
   val running: Boolean = false,
   val totalRunCount: Int = 0,
   val completedRunCount: Int = 0,
+  val errorMessage: String? = null,
 )
 
 @HiltViewModel
@@ -106,6 +107,7 @@ constructor(
       setRunProgress(completedRunCount = 0)
       setTotalRunCount(totalRunCount = runCount)
       setShowResultsViewer(showResultsViewer = true)
+      _uiState.update { it.copy(errorMessage = null) }
 
       val parts: List<String> =
         listOf(
@@ -117,15 +119,15 @@ constructor(
         )
       Log.d(TAG, "Running benchmark: ${parts.joinToString("\n")}")
 
-      // TODO: handle error.
-      val startMs = System.currentTimeMillis()
-      val prefillSpeeds = mutableListOf<Double>()
-      val decodeSpeeds = mutableListOf<Double>()
-      val timesToFirstToken = mutableListOf<Double>()
-      var firstInitTime = 0.0
-      val nonFirstInitTimes = mutableListOf<Double>()
-      var endMs = 0L
-        run {
+      try {
+        val startMs = System.currentTimeMillis()
+        val prefillSpeeds = mutableListOf<Double>()
+        val decodeSpeeds = mutableListOf<Double>()
+        val timesToFirstToken = mutableListOf<Double>()
+        var firstInitTime = 0.0
+        val nonFirstInitTimes = mutableListOf<Double>()
+        var endMs = 0L
+
         // Create a temporary cache dir to run benchmark in.
         val timestamp = System.currentTimeMillis()
         var needCleanUpCacheDir = true
@@ -140,79 +142,91 @@ constructor(
           needCleanUpCacheDir = false
         }
         Log.d(TAG, "Using benchmark cache dir: $cacheDirPath")
-        val backend: Backend =
-          when (accelerator.lowercase()) {
-            "gpu" -> Backend.GPU()
-            "npu",
-            "tpu" -> Backend.NPU(nativeLibraryDir = appContext.applicationInfo.nativeLibraryDir)
-            else -> Backend.CPU()
+
+        try {
+          val backend: Backend =
+            when (accelerator.lowercase()) {
+              "gpu" -> Backend.GPU()
+              "npu",
+              "tpu" -> Backend.NPU(nativeLibraryDir = appContext.applicationInfo.nativeLibraryDir)
+              else -> Backend.CPU()
+            }
+          val modelPath = model.getPath(context = appContext)
+          for (i in 0 until runCount) {
+            Log.d(TAG, "Start running #$i...")
+            val benchmarkInfo =
+              benchmark(
+                modelPath = modelPath,
+                backend = backend,
+                prefillTokens = prefillTokens,
+                decodeTokens = decodeTokens,
+                cacheDir = cacheDirPath,
+              )
+            Log.d(TAG, "Done #$i")
+
+            val initTimeMs = benchmarkInfo.initTimeInSecond * 1000.0
+            if (i == 0) {
+              firstInitTime = initTimeMs
+            } else {
+              nonFirstInitTimes.add(initTimeMs)
+            }
+            prefillSpeeds.add(benchmarkInfo.lastPrefillTokensPerSecond)
+            decodeSpeeds.add(benchmarkInfo.lastDecodeTokensPerSecond)
+            timesToFirstToken.add(benchmarkInfo.timeToFirstTokenInSecond)
+
+            // Mark finish for this run.
+            setRunProgress(completedRunCount = i + 1)
           }
-        val modelPath = model.getPath(context = appContext)
-        for (i in 0 until runCount) {
-          Log.d(TAG, "Start running #$i...")
-          val benchmarkInfo =
-            benchmark(
-              modelPath = modelPath,
-              backend = backend,
-              prefillTokens = prefillTokens,
-              decodeTokens = decodeTokens,
-              cacheDir = cacheDirPath,
+          endMs = System.currentTimeMillis()
+        } finally {
+          if (needCleanUpCacheDir) {
+            benchmarkCacheDir.deleteRecursively()
+            Log.d(TAG, "Cleaned up benchmark cache dir: ${benchmarkCacheDir.absolutePath}")
+          }
+        }
+
+        // Create and add benchmark result.
+        val basicInfo =
+          LlmBenchmarkBasicInfo.newBuilder()
+            .setStartMs(startMs)
+            .setEndMs(endMs)
+            .setModelName(model.name)
+            .setAccelerator(accelerator)
+            .setPrefillTokens(prefillTokens)
+            .setDecodeTokens(decodeTokens)
+            .setNumberOfRuns(runCount)
+            .setAppVersion(BuildConfig.VERSION_NAME)
+            .build()
+        val stats =
+          LlmBenchmarkStats.newBuilder()
+            .setPrefillSpeed(calculateValueSeries(prefillSpeeds))
+            .setDecodeSpeed(calculateValueSeries(decodeSpeeds))
+            .setTimeToFirstToken(calculateValueSeries(timesToFirstToken))
+            .setFirstInitTimeMs(firstInitTime)
+            .setNonFirstInitTimeMs(calculateValueSeries(nonFirstInitTimes))
+            .build()
+
+        val result =
+          BenchmarkResult.newBuilder()
+            .setLlmResult(
+              LlmBenchmarkResult.newBuilder().setBaiscInfo(basicInfo).setStats(stats).build()
             )
-          Log.d(TAG, "Done #$i")
-
-          val initTimeMs = benchmarkInfo.initTimeInSecond * 1000.0
-          if (i == 0) {
-            firstInitTime = initTimeMs
-          } else {
-            nonFirstInitTimes.add(initTimeMs)
-          }
-          prefillSpeeds.add(benchmarkInfo.lastPrefillTokensPerSecond)
-          decodeSpeeds.add(benchmarkInfo.lastDecodeTokensPerSecond)
-          timesToFirstToken.add(benchmarkInfo.timeToFirstTokenInSecond)
-
-          // Mark finish for this run.
-          setRunProgress(completedRunCount = i + 1)
-        }
-        endMs = System.currentTimeMillis()
-        if (needCleanUpCacheDir) {
-          benchmarkCacheDir.deleteRecursively()
-          Log.d(TAG, "Cleaned up benchmark cache dir: ${benchmarkCacheDir.absolutePath}")
-        }
+            .build()
+        val newId = addBenchmarkResult(result = result)
+        collapseAll()
+        setExpanded(id = newId, expanded = true)
+      } catch (e: Exception) {
+        Log.e(TAG, "Error executing benchmark", e)
+        val msg = e.localizedMessage ?: e.message ?: "Unknown benchmark execution error"
+        _uiState.update { it.copy(errorMessage = msg) }
+      } finally {
+        setRunning(running = false)
       }
-
-      // Create and add benchmark result.
-      val basicInfo =
-        LlmBenchmarkBasicInfo.newBuilder()
-          .setStartMs(startMs)
-          .setEndMs(endMs)
-          .setModelName(model.name)
-          .setAccelerator(accelerator)
-          .setPrefillTokens(prefillTokens)
-          .setDecodeTokens(decodeTokens)
-          .setNumberOfRuns(runCount)
-          .setAppVersion(BuildConfig.VERSION_NAME)
-          .build()
-      val stats =
-        LlmBenchmarkStats.newBuilder()
-          .setPrefillSpeed(calculateValueSeries(prefillSpeeds))
-          .setDecodeSpeed(calculateValueSeries(decodeSpeeds))
-          .setTimeToFirstToken(calculateValueSeries(timesToFirstToken))
-          .setFirstInitTimeMs(firstInitTime)
-          .setNonFirstInitTimeMs(calculateValueSeries(nonFirstInitTimes))
-          .build()
-
-      val result =
-        BenchmarkResult.newBuilder()
-          .setLlmResult(
-            LlmBenchmarkResult.newBuilder().setBaiscInfo(basicInfo).setStats(stats).build()
-          )
-          .build()
-      val newId = addBenchmarkResult(result = result)
-      collapseAll()
-      setExpanded(id = newId, expanded = true)
-
-      setRunning(running = false)
     }
+  }
+
+  fun clearErrorMessage() {
+    _uiState.update { _uiState.value.copy(errorMessage = null) }
   }
 
   fun setShowResultsViewer(showResultsViewer: Boolean) {

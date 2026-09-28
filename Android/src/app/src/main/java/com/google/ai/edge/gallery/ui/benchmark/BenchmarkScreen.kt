@@ -299,6 +299,23 @@ fun BenchmarkScreen(
     }
   }
 
+  // Error dialog for benchmark execution errors.
+  uiState.errorMessage?.let { errorMsg ->
+    AlertDialog(
+      title = { Text(stringResource(R.string.error)) },
+      text = { Text(errorMsg) },
+      onDismissRequest = { viewModel.clearErrorMessage() },
+      confirmButton = {
+        Button(
+          onClick = { viewModel.clearErrorMessage() },
+          contentPadding = SMALL_BUTTON_CONTENT_PADDING,
+        ) {
+          Text(stringResource(R.string.ok))
+        }
+      },
+    )
+  }
+
   // Confirmation dialog for running benchmark.
   if (showRunBenchmarkConfirmationDialog) {
     AlertDialog(
