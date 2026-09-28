@@ -73,6 +73,8 @@ import javax.inject.Inject
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -531,12 +533,14 @@ constructor(
       }
 
       // Delete files and recycle bitmaps.
+      val filesToDelete =
+        cutoutInfosToDelete.flatMap { cutoutInfo ->
+          val cutout = cutoutInfo.cutout
+          listOf(getCutoutOriginalFile(id = cutout.id), getCutoutCurrentFile(id = cutout.id))
+        }
+      deleteFiles(files = filesToDelete)
+
       for (cutoutInfo in cutoutInfosToDelete) {
-        val cutout = cutoutInfo.cutout
-        deleteFiles(
-          files =
-            listOf(getCutoutOriginalFile(id = cutout.id), getCutoutCurrentFile(id = cutout.id))
-        )
         cutoutInfo.originalBitmap?.recycle()
         cutoutInfo.editingBitmap?.recycle()
         // We will let GC to take care this one because it might still being used by collage editor.
@@ -1836,15 +1840,19 @@ constructor(
 
   private suspend fun deleteFiles(files: List<File>) {
     withContext(Dispatchers.IO) {
-      for (file in files) {
-        try {
-          if (file.exists()) {
-            file.delete()
+      files
+        .map { file ->
+          async {
+            try {
+              if (file.exists()) {
+                file.delete()
+              }
+            } catch (e: Exception) {
+              Log.e(TAG, "Failed to delete file: ${file.absolutePath}", e)
+            }
           }
-        } catch (e: Exception) {
-          Log.e(TAG, "Failed to delete file: ${file.absolutePath}", e)
         }
-      }
+        .awaitAll()
     }
   }
 
